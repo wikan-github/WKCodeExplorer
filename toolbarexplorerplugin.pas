@@ -14,6 +14,10 @@ procedure Register;
 
 implementation
 
+const
+  { Delay between the last text edit and the method-list refresh. }
+  MethodRefreshDelayMs = 500;
+
 type
   TMethodInfo = record
     Name: string;
@@ -37,6 +41,9 @@ type
     FProcessing: Boolean;
     FUpdatingCombo: Boolean;
     FLastCursorLine: Integer;
+    FRefreshTimer: TTimer;
+    FPrevEditor: TSourceEditorInterface;
+    FPrevEditorControl: TSynEdit;
     procedure CreateComboOnce;
     procedure ComboBoxChange(Sender: TObject);
     procedure UpdateMethods;
@@ -44,6 +51,8 @@ type
     procedure OnEditorDestroy(Sender: TObject);
     procedure OnEditorActivated(Sender: TObject);
     procedure OnCursorPosChanged(Sender: TObject; Changes: TSynStatusChanges);
+    procedure OnEditorTextChanged(Sender: TObject);
+    procedure OnRefreshTimer(Sender: TObject);
     procedure InitializeEvents;
     function PositionToLine(Buffer: TCodeBuffer; Position: Integer): Integer;
     function FindEditorToolbar: TToolBar;
@@ -53,6 +62,8 @@ type
     procedure UpdateComboSelection;
     function GetCurrentMethodIndex: Integer;
     procedure SetupCursorChangeEvent;
+    procedure DetachEditorHandlers;
+    procedure DisarmRefreshTimer;
     procedure FilterMethods(const SearchText: string);
   public
     constructor Create;
@@ -75,7 +86,13 @@ begin
   FCurrentEditor := nil;
   FComboBox := nil;
   FLabel := nil;
+  FPrevEditor := nil;
+  FPrevEditorControl := nil;
   FStoredMethods := TStringList.Create;
+  FRefreshTimer := TTimer.Create(nil);
+  FRefreshTimer.Interval := MethodRefreshDelayMs;
+  FRefreshTimer.Enabled := False;
+  FRefreshTimer.OnTimer := @OnRefreshTimer;
   InitializeEvents;
   DebugLn('[TCodeAnalyzerPlugin] Created');
 end;
@@ -84,6 +101,9 @@ destructor TCodeAnalyzerPlugin.Destroy;
 begin
   try
     DebugLn('[TCodeAnalyzerPlugin] Destroy');
+    DetachEditorHandlers;
+    DisarmRefreshTimer;
+    FreeAndNil(FRefreshTimer);
     DestroyCombo;
     FStoredMethods.Free;
     DebugLn('[TCodeAnalyzerPlugin] Destroyed');
@@ -120,11 +140,59 @@ begin
             (AEditor.FileName <> '');
 end;
 
+procedure TCodeAnalyzerPlugin.DetachEditorHandlers;
+var
+  SynEdit: TSynEdit;
+  I: Integer;
+  Editor: TSourceEditorInterface;
+begin
+  { Clear the handlers on the previously hooked editor before wiring a new one.
+    The stored editor may already have been freed, so it is never dereferenced
+    here: it is validated by identity against the IDE's live editor list first. }
+  SynEdit := nil;
+  if (FPrevEditor <> nil) and (FPrevEditorControl <> nil) then
+  begin
+    try
+      for I := 0 to SourceEditorManagerIntf.SourceEditorCount - 1 do
+      begin
+        Editor := SourceEditorManagerIntf.SourceEditors[I];
+        if Editor = FPrevEditor then
+        begin
+          if (Editor.EditorControl = FPrevEditorControl) and
+             (Editor.EditorControl is TSynEdit) then
+            SynEdit := TSynEdit(Editor.EditorControl);
+          Break;
+        end;
+      end;
+    except
+      on E: Exception do
+        DebugLn('[TCodeAnalyzerPlugin] Error in DetachEditorHandlers: ' + E.Message);
+    end;
+  end;
+
+  if SynEdit <> nil then
+  begin
+    SynEdit.OnStatusChange := nil;
+    SynEdit.OnChange := nil;
+  end;
+
+  FPrevEditor := nil;
+  FPrevEditorControl := nil;
+end;
+
+procedure TCodeAnalyzerPlugin.DisarmRefreshTimer;
+begin
+  if FRefreshTimer <> nil then
+    FRefreshTimer.Enabled := False;
+end;
+
 procedure TCodeAnalyzerPlugin.SetupCursorChangeEvent;
 var
   SynEdit: TSynEdit;
 begin
   try
+    DetachEditorHandlers;
+
     if not IsValidEditor(FCurrentEditor) then
       Exit;
 
@@ -132,12 +200,44 @@ begin
     begin
       SynEdit := TSynEdit(FCurrentEditor.EditorControl);
       SynEdit.OnStatusChange := nil;
+      SynEdit.OnChange := nil;
       SynEdit.OnStatusChange := @OnCursorPosChanged;
+      SynEdit.OnChange := @OnEditorTextChanged;
+      FPrevEditor := FCurrentEditor;
+      FPrevEditorControl := SynEdit;
       DebugLn('[TCodeAnalyzerPlugin] Cursor change event configured for editor');
     end;
   except
     on E: Exception do
       DebugLn('[TCodeAnalyzerPlugin] Error in SetupCursorChangeEvent: ' + E.Message);
+  end;
+end;
+
+procedure TCodeAnalyzerPlugin.OnEditorTextChanged(Sender: TObject);
+begin
+  try
+    if FRefreshTimer = nil then
+      Exit;
+
+    { Restart the countdown so the refresh runs once, 500 ms after the last edit. }
+    FRefreshTimer.Enabled := False;
+    FRefreshTimer.Enabled := True;
+  except
+    on E: Exception do
+      DebugLn('[TCodeAnalyzerPlugin] Error in OnEditorTextChanged: ' + E.Message);
+  end;
+end;
+
+procedure TCodeAnalyzerPlugin.OnRefreshTimer(Sender: TObject);
+begin
+  try
+    DisarmRefreshTimer;
+
+    if IsValidEditor(FCurrentEditor) then
+      UpdateMethods;
+  except
+    on E: Exception do
+      DebugLn('[TCodeAnalyzerPlugin] Error in OnRefreshTimer: ' + E.Message);
   end;
 end;
 
@@ -685,6 +785,7 @@ begin
     begin
       FCurrentEditor := NewEditor;
       CreateComboOnce;
+      DisarmRefreshTimer;
       UpdateMethods;
       SetupCursorChangeEvent;
     end;
@@ -697,6 +798,28 @@ end;
 procedure TCodeAnalyzerPlugin.OnEditorDestroy(Sender: TObject);
 begin
   try
+    DisarmRefreshTimer;
+
+    { Sender is the editor that is being destroyed (the IDE raises
+      semEditorDestroy from inside its destructor). Compare identity only --
+      never dereference it here. }
+    if (FCurrentEditor <> nil) and (Pointer(Sender) = Pointer(FCurrentEditor)) then
+    begin
+      if (FPrevEditor <> nil) and (FPrevEditor = FCurrentEditor) then
+      begin
+        FPrevEditor := nil;
+        FPrevEditorControl := nil;
+      end;
+      FCurrentEditor := nil;
+    end;
+
+    { Also drop the stored "previous editor" if that is the one going away. }
+    if (FPrevEditor <> nil) and (Pointer(Sender) = Pointer(FPrevEditor)) then
+    begin
+      FPrevEditor := nil;
+      FPrevEditorControl := nil;
+    end;
+
     DebugLn('[TCodeAnalyzerPlugin] OnEditorDestroy called');
   except
     on E: Exception do
@@ -714,6 +837,7 @@ begin
     if NewEditor <> FCurrentEditor then
     begin
       FCurrentEditor := NewEditor;
+      DisarmRefreshTimer;
       if IsValidEditor(FCurrentEditor) then
       begin
         DebugLn('[TCodeAnalyzerPlugin] OnEditorActivated: ' + ExtractFileName(FCurrentEditor.FileName));
