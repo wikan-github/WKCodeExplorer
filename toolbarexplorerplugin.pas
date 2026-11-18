@@ -158,20 +158,20 @@ begin
       FComboBox.Items.BeginUpdate;
       try
         FComboBox.Items.Clear;
-        FComboBox.Items.Add('(Select method - ' + IntToStr(FStoredMethods.Count) + ' found)');
+        FComboBox.Items.Add('(Select method - ' + IntToStr(Length(FMethods)) + ' found)');
 
         if LowerSearchText = '' then
         begin
-          for I := 0 to FStoredMethods.Count - 1 do
-            FComboBox.Items.Add(FStoredMethods[I]);
-          HasMatches := FStoredMethods.Count > 0;
+          for I := 0 to High(FMethods) do
+            FComboBox.Items.AddObject(FMethods[I].Name, TObject(PtrInt(FMethods[I].Line)));
+          HasMatches := Length(FMethods) > 0;
         end
         else
         begin
-          for I := 0 to FStoredMethods.Count - 1 do
+          for I := 0 to High(FMethods) do
           begin
-            if Pos(LowerSearchText, LowerCase(FStoredMethods[I])) > 0 then
-              FComboBox.Items.Add(FStoredMethods[I]);
+            if Pos(LowerSearchText, LowerCase(FMethods[I].Name)) > 0 then
+              FComboBox.Items.AddObject(FMethods[I].Name, TObject(PtrInt(FMethods[I].Line)));
           end;
           HasMatches := FComboBox.Items.Count > 1;
           if not HasMatches then
@@ -375,8 +375,6 @@ var
   Line: Integer;
   SynEdit: TSynEdit;
   SearchText: string;
-  SelectedMethod: string;
-  I: Integer;
   P: Integer;
 begin
   try
@@ -405,26 +403,21 @@ begin
       Exit;
     end;
 
-    // Method selected from list -> jump to it
+    // Method selected from list -> jump to the line stored in Objects[]
     if (SelectedIndex > 0) and (SelectedIndex < FComboBox.Items.Count) then
     begin
-      SelectedMethod := FComboBox.Items[SelectedIndex];
-      for I := 0 to High(FMethods) do
+      if FComboBox.Items.Objects[SelectedIndex] <> nil then
+        Line := PtrInt(FComboBox.Items.Objects[SelectedIndex])
+      else
+        Line := 0;
+      if (Line > 0) and (FCurrentEditor.EditorControl is TSynEdit) then
       begin
-        if FMethods[I].Name = SelectedMethod then
-        begin
-          Line := FMethods[I].Line;
-          if FCurrentEditor.EditorControl is TSynEdit then
-          begin
-            SynEdit := TSynEdit(FCurrentEditor.EditorControl);
-            SynEdit.CaretY := Line;
-            SynEdit.TopLine := Max(1, Line - 5);
-            SynEdit.SetFocus;
-            FLastCursorLine := Line;
-            DebugLn('[TCodeAnalyzerPlugin] Jumped to method: ' + FMethods[I].Name + ' at line ' + IntToStr(Line));
-          end;
-          Break;
-        end;
+        SynEdit := TSynEdit(FCurrentEditor.EditorControl);
+        SynEdit.CaretY := Line;
+        SynEdit.TopLine := Max(1, Line - 5);
+        SynEdit.SetFocus;
+        FLastCursorLine := Line;
+        DebugLn('[TCodeAnalyzerPlugin] Jumped to ' + FComboBox.Items[SelectedIndex] + ' at line ' + IntToStr(Line));
       end;
       Exit;
     end;
@@ -550,6 +543,7 @@ var
   aMethodName: string;
   Line: Integer;
   FileName: string;
+  I: Integer;
 begin
   try
     if FProcessing then
@@ -633,13 +627,15 @@ begin
       Node := Node.Next;
     end;
 
-    FComboBox.Items.Add('(Select method - ' + IntToStr(FStoredMethods.Count) + ' found)');
-    for aMethodName in FStoredMethods do
-      FComboBox.Items.Add(aMethodName);
+    FComboBox.Items.Add('(Select method - ' + IntToStr(Length(FMethods)) + ' found)');
+    // Each method item carries its target line in Objects[] (PtrInt), so the
+    // jump never depends on matching names.
+    for I := 0 to High(FMethods) do
+      FComboBox.Items.AddObject(FMethods[I].Name, TObject(PtrInt(FMethods[I].Line)));
 
     FComboBox.DropDownCount:= FComboBox.Items.Count;
 
-    if FStoredMethods.Count = 0 then
+    if Length(FMethods) = 0 then
       FComboBox.Items[0] := '(No methods found)';
 
     FComboBox.ItemIndex := 0;

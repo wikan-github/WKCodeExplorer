@@ -28,3 +28,8 @@ STATUS: MANUAL IDE TEST RUN BY USER. Automated IDE test: none.
 (a) 2 entries: TGamma.Always, TGamma.Extra. Header line: not recorded.
 (b) TGamma.Always -> line 20; TGamma.Extra -> line 25.
 (c) Not recorded.
+
+--- TestOverload.pas ---
+(a) 2 entries, both shown as "Show". Header line: not recorded.
+(b) first Show -> line 7; second Show -> line 10.
+(c) Typing "Show" keeps both entries.

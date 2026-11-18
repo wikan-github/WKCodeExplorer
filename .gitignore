@@ -84,6 +84,12 @@ modules/
 *.ppu
 /opm
 
+tests/backup/
+tests/extract_names
+tests/after.txt
+tests/after-optionA.txt
+tests/baseline-before.txt
+
 # Third-party MMX files (not ours to redistribute)
 MMXExternalServices.pas
 mmxmanual.pdf
