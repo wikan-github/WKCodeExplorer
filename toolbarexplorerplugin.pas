@@ -145,38 +145,52 @@ procedure TCodeAnalyzerPlugin.FilterMethods(const SearchText: string);
 var
   I: Integer;
   LowerSearchText: string;
-  CurrentText: string;
+  HasMatches: Boolean;
 begin
   try
-    LowerSearchText := LowerCase(SearchText);
-    CurrentText := FComboBox.Text;
+    if FUpdatingCombo or (FComboBox = nil) then
+      Exit;
 
-    FComboBox.Items.BeginUpdate;
+    FUpdatingCombo := True;
     try
-      FComboBox.Items.Clear;
-      FComboBox.Items.Add('(Select method - ' + IntToStr(FStoredMethods.Count) + ' found)');
+      LowerSearchText := LowerCase(SearchText);
 
-      if LowerSearchText = '' then
-      begin
-        for I := 0 to FStoredMethods.Count - 1 do
-          FComboBox.Items.Add(FStoredMethods[I]);
-      end
-      else
-      begin
-        for I := 0 to FStoredMethods.Count - 1 do
+      FComboBox.Items.BeginUpdate;
+      try
+        FComboBox.Items.Clear;
+        FComboBox.Items.Add('(Select method - ' + IntToStr(FStoredMethods.Count) + ' found)');
+
+        if LowerSearchText = '' then
         begin
-          if Pos(LowerSearchText, LowerCase(FStoredMethods[I])) > 0 then
+          for I := 0 to FStoredMethods.Count - 1 do
             FComboBox.Items.Add(FStoredMethods[I]);
+          HasMatches := FStoredMethods.Count > 0;
+        end
+        else
+        begin
+          for I := 0 to FStoredMethods.Count - 1 do
+          begin
+            if Pos(LowerSearchText, LowerCase(FStoredMethods[I])) > 0 then
+              FComboBox.Items.Add(FStoredMethods[I]);
+          end;
+          HasMatches := FComboBox.Items.Count > 1;
+          if not HasMatches then
+            FComboBox.Items[0] := '(No matching methods)';
         end;
-        if FComboBox.Items.Count = 1 then
-          FComboBox.Items[0] := '(No matching methods)';
+      finally
+        FComboBox.Items.EndUpdate;
       end;
 
-      FComboBox.Text := CurrentText;
-      if FComboBox.Items.Count > 1 then
-        FComboBox.DroppedDown := True;
+      FComboBox.ItemIndex := -1;
+      FComboBox.Text := SearchText;
+      FComboBox.SelStart := Length(SearchText);
+      FComboBox.SelLength := 0;
+      // Do not force the drop-down open here: on GTK3 opening it programmatically
+      // highlights the first matching item, which fires OnChange as if the user
+      // had picked it (jump + focus moved to the editor), so further typing is lost.
+      // The list is filtered in place; the user opens it with the arrow/click.
     finally
-      FComboBox.Items.EndUpdate;
+      FUpdatingCombo := False;
     end;
   except
     on E: Exception do
@@ -363,6 +377,7 @@ var
   SearchText: string;
   SelectedMethod: string;
   I: Integer;
+  P: Integer;
 begin
   try
     if FUpdatingCombo or (FComboBox = nil) or not IsValidEditor(FCurrentEditor) then
@@ -371,23 +386,29 @@ begin
     SearchText := FComboBox.Text;
     SelectedIndex := FComboBox.ItemIndex;
 
-    if (SearchText <> '') and (SelectedIndex = -1) then
-    begin
-      FilterMethods(SearchText);
-      Exit;
-    end;
+    // Strip header/no-match text if it got merged into the edit text
+    P := Pos('(Select method', SearchText);
+    if P = 1 then
+      SearchText := ''
+    else if P > 1 then
+      SearchText := Copy(SearchText, 1, P - 1);
+    P := Pos('(No matching methods)', SearchText);
+    if P = 1 then
+      SearchText := ''
+    else if P > 1 then
+      SearchText := Copy(SearchText, 1, P - 1);
 
-    if SearchText = '' then
+    // Header/no-match item selected from list -> reset to show-all filter state
+    if SelectedIndex = 0 then
     begin
       FilterMethods('');
-      FComboBox.ItemIndex := 0;
       Exit;
     end;
 
+    // Method selected from list -> jump to it
     if (SelectedIndex > 0) and (SelectedIndex < FComboBox.Items.Count) then
     begin
       SelectedMethod := FComboBox.Items[SelectedIndex];
-
       for I := 0 to High(FMethods) do
       begin
         if FMethods[I].Name = SelectedMethod then
@@ -405,7 +426,18 @@ begin
           Break;
         end;
       end;
+      Exit;
     end;
+
+    // Empty filter -> show all methods, keep edit empty for typing
+    if SearchText = '' then
+    begin
+      FilterMethods('');
+      Exit;
+    end;
+
+    // Typing -> filter by entered text
+    FilterMethods(SearchText);
   except
     on E: Exception do
       DebugLn('[TCodeAnalyzerPlugin] Error in ComboBoxChange: ' + E.Message);
@@ -580,7 +612,12 @@ begin
     begin
       if (Node.Desc = ctnProcedure) then
       begin
-        aMethodName := Tool.ExtractProcName(Node, []);
+        if Tool.FindProcBody(Node) = nil then
+        begin
+          Node := Node.Next;
+          Continue;
+        end;
+        aMethodName := Tool.ExtractProcName(Node, [phpAddClassName]);
         Line := PositionToLine(CodeBuffer, Node.StartPos);
 
         if (aMethodName <> '') and (Line > 0) then

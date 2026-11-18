@@ -1,0 +1,30 @@
+IDE TEST RESULTS (manual) — toolbarexplorerplugin / mmx-explorer-m1
+Working folder: /media/kastawan/Kingston250-SSD/MEGAsync/@OpenCode/Output/MMX-Clone/
+Code state: [phpAddClassName] + Option A (FindProcBody filter) + filter/typing
+fixes, uncommitted (after git reset --soft 8fb316d).
+Tester: user, manual run in Lazarus IDE (gtk3), package rebuilt and reinstalled.
+
+STATUS: MANUAL IDE TEST RUN BY USER. Automated IDE test: none.
+
+[x] Package installed from MMX-Clone/ with the current change
+[x] TestSimple.pas
+[x] TestVisibility.pas
+[x] TestIfDef.pas
+
+--- TestSimple.pas ---
+(a) 3 entries: GlobalProc, TAlpha.Foo, TAlpha.Bar. Header line: not recorded.
+(b) GlobalProc -> line 18; TAlpha.Foo -> line 22; TAlpha.Bar -> line 26.
+(c) Typing "Foo" shows only TAlpha.Foo; selecting it jumps to line 22.
+    Clearing the filter restores the full list. No focus loss while typing.
+
+--- TestVisibility.pas ---
+(a) 5 entries: TBeta.Priv, TBeta.Prot, TBeta.Create, TBeta.Pub, TBeta.Pubd.
+    Header line: not recorded.
+(b) TBeta.Priv -> line 22; TBeta.Prot -> line 26; TBeta.Create -> line 31;
+    TBeta.Pub -> line 35; TBeta.Pubd -> line 39.
+(c) Not recorded.
+
+--- TestIfDef.pas ---
+(a) 2 entries: TGamma.Always, TGamma.Extra. Header line: not recorded.
+(b) TGamma.Always -> line 20; TGamma.Extra -> line 25.
+(c) Not recorded.

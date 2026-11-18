@@ -83,3 +83,12 @@ modules/
 *.compiled
 *.ppu
 /opm
+
+# Third-party MMX files (not ours to redistribute)
+MMXExternalServices.pas
+mmxmanual.pdf
+mmx-features.html
+HANDOFF.md
+HANDOFF-REPORT-for-Claude.md
+MVP-Implementation-Plan.md
+Lazarus-MMX-Style-Code-Explorer-Milestone-Plan.md
