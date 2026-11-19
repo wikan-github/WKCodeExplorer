@@ -692,6 +692,30 @@ begin
 end;
 
 procedure TWKCodeExplorerView.WKCopyMenuItemClick(Sender: TObject);
+const
+  CRLF = #13#10;
+
+  function PosToLineIndex(const S: string; P: Integer): Integer;
+  var
+    i: Integer;
+  begin
+    Result := 0;
+    i := 1;
+    while (i < P) and (i <= Length(S)) do
+    begin
+      if S[i] = #10 then
+        Inc(Result)
+      else if (S[i] = #13) and ((i = Length(S)) or (S[i + 1] <> #10)) then
+        Inc(Result);
+      Inc(i);
+    end;
+  end;
+
+  function IsIdentChar2(C: Char): Boolean;
+  begin
+    Result := C in ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+  end;
+
 var
   CurTreeView: TCustomTreeView;
   CurItem: TTreeNode;
@@ -700,7 +724,7 @@ var
   ACodeTool: TCodeTool;
   Source: string;
   AClassName: string;
-  FoundNode: TCodeTreeNode;
+  FoundNode, MemberCTNode: TCodeTreeNode;
   Impls: TStringList;
   Out: string;
   I, J, K: Integer;
@@ -717,6 +741,8 @@ var
   Line: string;
   Rest: string;
   TrimmedLine: string;
+  MemberLineIdx, VisLineIdx, P: Integer;
+  VisName, MemberDeclText, RoutineText, MemberName: string;
 begin
   CurTreeView := GetCurrentTreeView;
   if CurTreeView = nil then exit;
@@ -727,36 +753,221 @@ begin
   if CurItem = nil then exit;
   CurNode := TViewNodeData(CurItem.Data);
   if CurNode = nil then exit;
-  // Check if it's a class node
-  if not (CurNode.Desc = ctnTypeDefinition) then exit;
-  FoundNode := FindClassCTNode(CurNode);
-  if FoundNode = nil then exit;
-  if not (FoundNode.FirstChild <> nil) then exit;
-  if not (FoundNode.FirstChild.Desc in AllClasses) then exit;
 
-  // Load source file
-  CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
-  if CodeBuffer = nil then exit;
-  ACodeTool := nil;
-  CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
-  if ACodeTool = nil then exit;
+  if CurNode.Desc = ctnTypeDefinition then begin
+    FoundNode := FindClassCTNode(CurNode);
+    if FoundNode = nil then exit;
+    if not (FoundNode.FirstChild <> nil) then exit;
+    if not (FoundNode.FirstChild.Desc in AllClasses) then exit;
 
-  // Derive the class name from the CodeTools node; fall back to the tree label.
-  // CurNode.Path is only assigned for ctnProcedure nodes (CreateNodePath),
-  // so it is empty for a ctnTypeDefinition class node.
-  AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
-  if AClassName = '' then
-    AClassName := CurItem.Text;
-  if AClassName = '' then exit;
+    // Load source file
+    CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if CodeBuffer = nil then exit;
+    ACodeTool := nil;
+    CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
+    if ACodeTool = nil then exit;
 
-  Source := CodeBuffer.Source;
+    // Derive the class name from the CodeTools node; fall back to the tree label.
+    // CurNode.Path is only assigned for ctnProcedure nodes (CreateNodePath),
+    // so it is empty for a ctnTypeDefinition class node.
+    AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
+    if AClassName = '' then
+      AClassName := CurItem.Text;
+    if AClassName = '' then exit;
 
-  // Build implementation list
-  Impls := TStringList.Create;
-  try
+    Source := CodeBuffer.Source;
+
+    // Build implementation list
+    Impls := TStringList.Create;
+    try
+      SL := TStringList.Create;
+      try
+        SL.Text := Source;
+        InImpl := False;
+        I := 0;
+        while I < SL.Count do
+        begin
+          if not InImpl then
+          begin
+            if Pos('implementation', SL[I]) > 0 then
+              InImpl := True;
+            I := I + 1;
+            Continue;
+          end;
+
+          S := SL[I];
+          Trimmed := S;
+          while (Length(Trimmed) > 0) and (Trimmed[1] = ' ') do
+            Delete(Trimmed, 1, 1);
+
+          IsRoutine := (Pos('procedure ' + AClassName + '.', Trimmed) = 1) or
+                       (Pos('function ' + AClassName + '.', Trimmed) = 1) or
+                       (Pos('constructor ' + AClassName + '.', Trimmed) = 1);
+
+          if not IsRoutine then
+          begin
+            I := I + 1;
+            Continue;
+          end;
+
+          Indent := '';
+          for K := 1 to Length(S) do
+          begin
+            if S[K] = ' ' then
+              Indent := Indent + ' '
+            else
+              Break;
+          end;
+
+          J := I;
+          while J < SL.Count do
+          begin
+            Line := SL[J];
+
+            CommentTag := '{ ' + AClassName + ' }';
+            if Pos(CommentTag, Line) > 0 then
+            begin
+              Rest := Copy(Line, Length(CommentTag) + 1);
+              while (Length(Rest) > 0) and (Rest[1] in [' ', #9]) do
+                Delete(Rest, 1, 1);
+              Line := Rest;
+            end;
+
+            Impls.Add(Line);
+
+            CurrIndent := '';
+            for K := 1 to Length(SL[J]) do
+            begin
+              if SL[J][K] = ' ' then
+                CurrIndent := CurrIndent + ' '
+              else
+                Break;
+            end;
+
+            TrimmedLine := SL[J];
+            while (Length(TrimmedLine) > 0) and (TrimmedLine[1] = ' ') do
+              Delete(TrimmedLine, 1, 1);
+
+            if (TrimmedLine = 'end;') and (CurrIndent = Indent) then
+            begin
+              J := J + 1;
+              Break;
+            end;
+
+            J := J + 1;
+          end;
+          I := J;
+        end;
+      finally
+        SL.Free;
+      end;
+
+      // Compute class range
+      ClassStart := -1;
+      ClassEnd := -1;
+      InClass := False;
+      SL := TStringList.Create;
+      try
+        SL.Text := Source;
+        for I := 0 to SL.Count - 1 do
+        begin
+          if Pos(AClassName + ' = class', SL[I]) > 0 then
+          begin
+            InClass := True;
+            ClassStart := I + 1;
+          end;
+          if InClass and (Pos('end;', SL[I]) > 0) then
+          begin
+            ClassEnd := I + 1;
+            Break;
+          end;
+        end;
+      finally
+        SL.Free;
+      end;
+
+      if (ClassStart < 1) or (ClassEnd < 1) then exit;
+
+      // Build CLASSCOPY text
+      Out := BuildClassCopyText(Source, AClassName, ClassStart, ClassEnd, Impls);
+
+      // Set clipboard
+      Clipboard.AsText := Out;
+    finally
+      Impls.Free;
+    end;
+    exit;
+  end;
+
+  if (CurNode.Desc = ctnProcedure) or (CurNode.Desc = ctnProperty) then begin
+    FoundNode := FindClassCTNode(CurNode);
+    if FoundNode = nil then exit;
+    if not (FoundNode.FirstChild <> nil) then exit;
+    if not (FoundNode.FirstChild.Desc in AllClasses) then exit;
+
+    CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if CodeBuffer = nil then exit;
+    ACodeTool := nil;
+    CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
+    if ACodeTool = nil then exit;
+
+    AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
+    if AClassName = '' then
+      AClassName := CurItem.Text;
+    if AClassName = '' then exit;
+
+    Source := CodeBuffer.Source;
     SL := TStringList.Create;
     try
       SL.Text := Source;
+
+      // Compute class range
+      ClassStart := -1;
+      ClassEnd := -1;
+      InClass := False;
+      for I := 0 to SL.Count - 1 do
+      begin
+        if Pos(AClassName + ' = class', SL[I]) > 0 then
+        begin
+          InClass := True;
+          ClassStart := I + 1;
+        end;
+        if InClass and (Trim(SL[I]) = 'end;') then
+        begin
+          ClassEnd := I + 1;
+          Break;
+        end;
+      end;
+      if (ClassStart < 1) or (ClassEnd < 1) then exit;
+
+      MemberCTNode := ACodeTool.FindDeepestNodeAtPos(CurNode.StartPos, false);
+      if MemberCTNode = nil then
+        MemberLineIdx := PosToLineIndex(Source, CurNode.StartPos)
+      else
+        MemberLineIdx := PosToLineIndex(Source, MemberCTNode.StartPos);
+
+      VisLineIdx := -1;
+      VisName := 'public';
+      for I := ClassStart - 1 to MemberLineIdx do
+      begin
+        S := Trim(SL[I]);
+        if (S = 'private') or (S = 'protected') or (S = 'public') or (S = 'published') then
+        begin
+          VisLineIdx := I;
+          VisName := S;
+        end;
+      end;
+
+      if (MemberLineIdx < 0) or (MemberLineIdx >= SL.Count) then exit;
+      MemberDeclText := SL[MemberLineIdx];
+
+      RoutineText := '';
+      MemberName := '';
+      for K := 1 to Length(CurItem.Text) do
+        if CurItem.Text[K] in ['A'..'Z', 'a'..'z', '0'..'9', '_'] then
+          MemberName := MemberName + CurItem.Text[K]
+        else
+          Break;
       InImpl := False;
       I := 0;
       while I < SL.Count do
@@ -774,9 +985,21 @@ begin
         while (Length(Trimmed) > 0) and (Trimmed[1] = ' ') do
           Delete(Trimmed, 1, 1);
 
-        IsRoutine := (Pos('procedure ' + AClassName + '.', Trimmed) = 1) or
-                     (Pos('function ' + AClassName + '.', Trimmed) = 1) or
-                     (Pos('constructor ' + AClassName + '.', Trimmed) = 1);
+        CommentTag := 'procedure ' + AClassName + '.' + MemberName;
+        IsRoutine := (Pos(CommentTag, Trimmed) = 1) and
+          ((Length(Trimmed) = Length(CommentTag)) or not IsIdentChar2(Trimmed[Length(CommentTag) + 1]));
+        if not IsRoutine then
+        begin
+          CommentTag := 'function ' + AClassName + '.' + MemberName;
+          IsRoutine := (Pos(CommentTag, Trimmed) = 1) and
+            ((Length(Trimmed) = Length(CommentTag)) or not IsIdentChar2(Trimmed[Length(CommentTag) + 1]));
+        end;
+        if not IsRoutine then
+        begin
+          CommentTag := 'constructor ' + AClassName + '.' + MemberName;
+          IsRoutine := (Pos(CommentTag, Trimmed) = 1) and
+            ((Length(Trimmed) = Length(CommentTag)) or not IsIdentChar2(Trimmed[Length(CommentTag) + 1]));
+        end;
 
         if not IsRoutine then
         begin
@@ -807,7 +1030,7 @@ begin
             Line := Rest;
           end;
 
-          Impls.Add(Line);
+          RoutineText := RoutineText + Line + CRLF;
 
           CurrIndent := '';
           for K := 1 to Length(SL[J]) do
@@ -830,45 +1053,36 @@ begin
 
           J := J + 1;
         end;
-        I := J;
+        Break;
       end;
-    finally
-      SL.Free;
-    end;
 
-    // Compute class range
-    ClassStart := -1;
-    ClassEnd := -1;
-    InClass := False;
-    SL := TStringList.Create;
-    try
-      SL.Text := Source;
-      for I := 0 to SL.Count - 1 do
+      Out := '//MMWIN:MEMBERSCOPY' + CRLF;
+      Out := Out + 'unit _MM_Copy_Buffer_;' + CRLF;
+      Out := Out + CRLF;
+      Out := Out + 'interface' + CRLF;
+      Out := Out + CRLF;
+      Out := Out + 'type' + CRLF;
+      Out := Out + '  ' + AClassName + ' = class' + CRLF;
+      if VisLineIdx >= 0 then
+        Out := Out + SL[VisLineIdx] + CRLF
+      else
+        Out := Out + '  ' + VisName + CRLF;
+      Out := Out + MemberDeclText + CRLF;
+      Out := Out + '  end;' + CRLF;
+      Out := Out + CRLF;
+      Out := Out + 'implementation' + CRLF;
+      Out := Out + CRLF;
+      if RoutineText <> '' then
       begin
-        if Pos(AClassName + ' = class', SL[I]) > 0 then
-        begin
-          InClass := True;
-          ClassStart := I + 1;
-        end;
-        if InClass and (Pos('end;', SL[I]) > 0) then
-        begin
-          ClassEnd := I + 1;
-          Break;
-        end;
+        Out := Out + RoutineText + CRLF;
+        Out := Out + CRLF;
       end;
+      Out := Out + 'end.' + CRLF;
+
+      Clipboard.AsText := Out;
     finally
       SL.Free;
     end;
-
-    if (ClassStart < 1) or (ClassEnd < 1) then exit;
-
-    // Build CLASSCOPY text
-    Out := BuildClassCopyText(Source, AClassName, ClassStart, ClassEnd, Impls);
-
-    // Set clipboard
-    Clipboard.AsText := Out;
-  finally
-    Impls.Free;
   end;
 end;
 
@@ -890,6 +1104,13 @@ var
   ClassIdx, ClassEndIdx, ClassLineIdx, EndClassIdx: Integer;
   MemberInsertLine, InterfaceIdx: Integer;
   RoutineExists, HasClass, HasTypeInInterface: Boolean;
+  CurPasteTV: TCustomTreeView;
+  CurPasteItem: TTreeNode;
+  CurPasteNodeData: TViewNodeData;
+  PasteTargetNode: TCodeTreeNode;
+  PasteCodeBuffer: TCodeBuffer;
+  PasteCodeTool: TCodeTool;
+  TargetClassName, CheckHeader: string;
 
   function CountInsertedLines(const AText: string): Integer;
   var
@@ -950,6 +1171,44 @@ begin
   EditorText := Syn.Text;
   NewName := ChooseFreeClassName(EditorText, OldName);
 
+  TargetClassName := OldName;
+  if Kind = 'MEMBER' then
+  begin
+    // Determine target class: if a class node is selected in the WK tree, paste into it.
+    CurPasteTV := GetCurrentTreeView;
+    if CurPasteTV <> nil then
+    begin
+      if tvoAllowMultiselect in CurPasteTV.Options then
+        CurPasteItem := CurPasteTV.GetFirstMultiSelected
+      else
+        CurPasteItem := CurPasteTV.Selected;
+      if CurPasteItem <> nil then
+      begin
+        CurPasteNodeData := TViewNodeData(CurPasteItem.Data);
+        if (CurPasteNodeData <> nil) and (CurPasteNodeData.Desc = ctnTypeDefinition) then
+        begin
+          PasteTargetNode := FindClassCTNode(CurPasteNodeData);
+          if PasteTargetNode <> nil then
+          begin
+            PasteCodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+            if PasteCodeBuffer <> nil then
+            begin
+              PasteCodeTool := nil;
+              CodeToolBoss.Explore(PasteCodeBuffer, PasteCodeTool, false);
+              if PasteCodeTool <> nil then
+                TargetClassName := PasteCodeTool.ExtractDefinitionName(PasteTargetNode);
+            end;
+          end;
+          if TargetClassName = '' then
+            TargetClassName := CurPasteItem.Text;
+        end;
+      end;
+    end;
+    if TargetClassName = '' then
+      TargetClassName := OldName;
+    NewName := TargetClassName;
+  end;
+
   Lines := TStringList.Create;
   Impls := nil;
   try
@@ -965,14 +1224,20 @@ begin
         ImplSectionLine := I + 1;
       if S = 'end.' then
         FinalEndLine := I + 1;
-      if (ClassIdx < 0) and (Pos(OldName + ' = class', Lines[I]) > 0) then
-        ClassIdx := I;
+      if Kind = 'MEMBER' then
+      begin
+        if (ClassIdx < 0) and (Pos(NewName + ' = class', Lines[I]) > 0) then
+          ClassIdx := I;
+      end
+      else
+      begin
+        if (ClassIdx < 0) and (Pos(OldName + ' = class', Lines[I]) > 0) then
+          ClassIdx := I;
+      end;
       if (ClassIdx >= 0) and (ClassEndIdx < 0) and (S = 'end;') then
         ClassEndIdx := I;
     end;
     HasClass := (ClassIdx >= 0) and (ClassEndIdx > ClassIdx);
-    if HasClass and (Kind = 'MEMBER') then
-      NewName := OldName;
     if (ImplSectionLine < 1) or (FinalEndLine < 1) then Exit;
 
     Impls := ExtractRoutines(ClipText);
@@ -988,7 +1253,8 @@ begin
           Header := Trim(Copy(Impls[I], 1, J - 1))
         else
           Header := Trim(Impls[I]);
-        if (Header <> '') and (Pos(Header, EditorText) > 0) then
+        CheckHeader := RenameWholeIdentifier(Header, OldName, NewName);
+        if (CheckHeader <> '') and (Pos(CheckHeader, EditorText) > 0) then
         begin
           RoutineExists := True;
           Break;
@@ -1079,12 +1345,19 @@ begin
             MemberText := '';
             if (ClassLineIdx >= 0) and (EndClassIdx > ClassLineIdx) then
               for I := ClassLineIdx + 1 to EndClassIdx - 1 do
+              begin
+                S := Trim(SL[I]);
+                if (Visibility <> '') and (S = Visibility) then
+                  Continue;
                 MemberText := MemberText + SL[I] + CRLF;
+              end;
           finally
             SL.Free;
           end;
 
-          // Insert into the matching visibility section, or add it before end;.
+          // Visibility comes from clipboard class text (section label above member).
+          // Insert into the matching section in the target class; if that section
+          // is missing, add it before the target's "end;".
           MemberInsertLine := -1;
           if Visibility <> '' then
             for I := ClassIdx + 1 to ClassEndIdx - 1 do
@@ -1189,7 +1462,6 @@ var
   CanRename: boolean;
   CurNode: TViewNodeData;
   HasImplementation: Boolean;
-  DebugF: TextFile;
   FoundNode: TCodeTreeNode;
 begin
   CanRename:=false;
@@ -1219,15 +1491,24 @@ begin
   end;
   WKCERenameIDEMenuCommand.Visible:=CanRename;
   WKCEJumpToImplementationIDEMenuCommand.Visible:=HasImplementation;
-  // Enable Copy only for class nodes
+  // Enable Copy for class nodes and for member nodes (procedure/property)
   WKCopyMenuItem.Enabled := false;
   if CurItem <> nil then begin
     CurNode := TViewNodeData(CurItem.Data);
-    if (CurNode <> nil) and (CurNode.Desc = ctnTypeDefinition) then begin
-      FoundNode := FindClassCTNode(CurNode);
-      if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
-         (FoundNode.FirstChild.Desc in AllClasses) then
-        WKCopyMenuItem.Enabled := true;
+    if CurNode <> nil then begin
+      if CurNode.Desc = ctnTypeDefinition then begin
+        FoundNode := FindClassCTNode(CurNode);
+        if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+           (FoundNode.FirstChild.Desc in AllClasses) then
+          WKCopyMenuItem.Enabled := true;
+      end
+      else if CurNode.Desc in [ctnProcedure, ctnProperty] then
+      begin
+        FoundNode := FindClassCTNode(CurNode);
+        if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+           (FoundNode.FirstChild.Desc in AllClasses) then
+          WKCopyMenuItem.Enabled := true;
+      end;
     end;
   end;
   //DebugLn(['TWKCodeExplorerView.TreePopupmenuPopup ',WKCERenameIDEMenuCommand.Visible]);
