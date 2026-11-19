@@ -101,3 +101,12 @@ Lazarus-MMX-Style-Code-Explorer-Milestone-Plan.md
 
 # WKCodeExplorer build output
 WKCodeExplorer/lib/
+
+# Working notes and scratch files (not project code)
+M2-*.md
+M3-*.md
+tests/TestHuge.pas
+tests/TestLarge.pas
+tests/extract_names.lpi
+tests/extract_names.lpr
+prompt-result/WKCodeExplorer-commit-report.md
