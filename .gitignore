@@ -98,3 +98,6 @@ HANDOFF.md
 HANDOFF-REPORT-for-Claude.md
 MVP-Implementation-Plan.md
 Lazarus-MMX-Style-Code-Explorer-Milestone-Plan.md
+
+# WKCodeExplorer build output
+WKCodeExplorer/lib/

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="5">
+    <PathDelim Value="/"/>
+    <Name Value="WKCodeExplorer"/>
+    <Type Value="RunAndDesignTime"/>
+    <Author Value="Anderson Fiori"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <PathDelim Value="/"/>
+      <SearchPaths>
+        <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)"/>
+      </SearchPaths>
+    </CompilerOptions>
+    <License Value="GPL-2.0-or-later (derived from Lazarus codeexplorer.pas); repository LICENSE is MIT"/>
+    <Files>
+      <Item>
+        <Filename Value="WKCodeExplorerRegister.pas"/>
+        <Type Value="Main Unit"/>
+        <UnitName Value="WKCodeExplorerRegister"/>
+      </Item>
+      <Item>
+        <Filename Value="WKCodeExplorer.pas"/>
+        <Type Value="Unit"/>
+        <HasRegisterProc Value="True"/>
+        <UnitName Value="WKCodeExplorer"/>
+      </Item>
+      <Item>
+        <Filename Value="WKCodeExplOpts.pas"/>
+        <Type Value="Unit"/>
+        <UnitName Value="WKCodeExplOpts"/>
+      </Item>
+      <Item>
+        <Filename Value="WKCodeExplorer.lfm"/>
+      </Item>
+    </Files>
+    <RequiredPkgs>
+      <Item>
+        <PackageName Value="CodeTools"/>
+      </Item>
+      <Item>
+        <PackageName Value="LazUtils"/>
+      </Item>
+      <Item>
+        <PackageName Value="LCL"/>
+      </Item>
+      <Item>
+        <PackageName Value="IDEIntf"/>
+      </Item>
+      <Item>
+        <PackageName Value="SynEdit"/>
+      </Item>
+      <Item>
+        <PackageName Value="FCL"/>
+      </Item>
+    </RequiredPkgs>
+    <UsageOptions>
+      <UnitPath Value="$(PkgOutDir)"/>
+    </UsageOptions>
+    <PublishOptions>
+      <Version Value="2"/>
+      <UseFileFilters Value="True"/>
+    </PublishOptions>
+  </Package>
+</CONFIG>

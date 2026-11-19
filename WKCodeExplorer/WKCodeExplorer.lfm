@@ -1,0 +1,234 @@
+object CodeExplorerView: TWKCodeExplorerView
+  Left = 799
+  Height = 517
+  Top = 136
+  Width = 220
+  Caption = 'WKCodeExplorer'
+  ClientHeight = 517
+  ClientWidth = 220
+  KeyPreview = True
+  LCLVersion = '4.99.0.0'
+  OnActivate = FormActivate
+  OnCreate = CodeExplorerViewCREATE
+  OnDestroy = CodeExplorerViewDestroy
+  object MainNotebook: TPageControl
+    Left = 0
+    Height = 517
+    Top = 0
+    Width = 220
+    ActivePage = CodePage
+    Align = alClient
+    TabIndex = 0
+    TabOrder = 0
+    OnChange = MainNotebookPageChanged
+    object CodePage: TTabSheet
+      Caption = 'CodePage'
+      ClientHeight = 489
+      ClientWidth = 212
+      object CodeTreeview: TTreeView
+        Left = 0
+        Height = 465
+        Top = 24
+        Width = 212
+        Align = alClient
+        BorderSpacing.Top = 1
+        HideSelection = False
+        Images = Imagelist1
+        PopupMenu = TreePopupmenu
+        ReadOnly = True
+        RightClickSelect = True
+        TabOrder = 1
+        Options = [tvoAutoItemHeight, tvoKeepCollapsedNodes, tvoReadOnly, tvoRightClickSelect, tvoShowButtons, tvoShowLines, tvoShowRoot, tvoToolTips, tvoNoDoubleClickExpand, tvoThemedDraw]
+        OnDblClick = TreeviewDblClick
+        OnDeletion = TreeviewDeletion
+        OnKeyDown = TreeviewKeyDown
+        OnMouseDown = CodeTreeviewMouseDown
+      end
+      object CodeTreeviewButtonPanel: TPanel
+        Left = 0
+        Height = 23
+        Top = 0
+        Width = 212
+        Align = alTop
+        AutoSize = True
+        BevelOuter = bvNone
+        ClientHeight = 23
+        ClientWidth = 212
+        TabOrder = 0
+        object CodeFilterEdit: TEditButton
+          AnchorSideLeft.Control = CodeTreeviewButtonPanel
+          AnchorSideTop.Control = CodeTreeviewButtonPanel
+          AnchorSideRight.Control = CodeRefreshSpeedButton
+          Left = 0
+          Height = 23
+          Top = 0
+          Width = 141
+          Anchors = [akTop, akLeft, akRight]
+          BorderSpacing.Right = 2
+          ButtonWidth = 23
+          MaxLength = 0
+          NumGlyphs = 1
+          PasswordChar = #0
+          Spacing = 2
+          TabOrder = 0
+          Text = 'CodeFilterEdit'
+          OnButtonClick = FilterEditButtonClick
+          OnChange = CodeFilterEditChange
+          OnEnter = FilterEditEnter
+        end
+        object CodeRefreshSpeedButton: TSpeedButton
+          AnchorSideRight.Control = CodeModeSpeedButton
+          AnchorSideBottom.Control = CodeFilterEdit
+          AnchorSideBottom.Side = asrBottom
+          Left = 143
+          Height = 22
+          Hint = 'Refresh CodeExplorer'
+          Top = 1
+          Width = 23
+          Anchors = [akTop, akRight, akBottom]
+          Flat = True
+          ShowHint = True
+          ParentShowHint = False
+          OnClick = CodeRefreshSpeedButtonClick
+        end
+        object CodeModeSpeedButton: TSpeedButton
+          AnchorSideRight.Control = CodeOptionsSpeedButton
+          AnchorSideBottom.Control = CodeRefreshSpeedButton
+          AnchorSideBottom.Side = asrBottom
+          Left = 166
+          Height = 22
+          Top = 1
+          Width = 23
+          Anchors = [akTop, akRight, akBottom]
+          Flat = True
+          ShowHint = True
+          ParentShowHint = False
+          OnClick = CodeModeSpeedButtonClick
+        end
+        object CodeOptionsSpeedButton: TSpeedButton
+          AnchorSideRight.Control = CodeTreeviewButtonPanel
+          AnchorSideRight.Side = asrBottom
+          AnchorSideBottom.Control = CodeRefreshSpeedButton
+          AnchorSideBottom.Side = asrBottom
+          Left = 189
+          Height = 22
+          Hint = 'Options for CodeExplorer'
+          Top = 1
+          Width = 23
+          Anchors = [akTop, akRight, akBottom]
+          Flat = True
+          ShowHint = True
+          ParentShowHint = False
+          OnClick = OptionsSpeedButtonClick
+        end
+      end
+    end
+    object DirectivesPage: TTabSheet
+      Caption = 'DirectivesPage'
+      ClientHeight = 489
+      ClientWidth = 212
+      object DirTreeviewButtonPanel: TPanel
+        Left = 0
+        Height = 23
+        Top = 0
+        Width = 212
+        Align = alTop
+        AutoSize = True
+        BevelOuter = bvNone
+        ClientHeight = 23
+        ClientWidth = 212
+        TabOrder = 0
+        object DirectivesFilterEdit: TEditButton
+          AnchorSideRight.Control = DirRefreshSpeedButton
+          Left = 0
+          Height = 23
+          Top = 0
+          Width = 164
+          Anchors = [akTop, akLeft, akRight]
+          BorderSpacing.Right = 2
+          ButtonWidth = 23
+          MaxLength = 0
+          NumGlyphs = 1
+          PasswordChar = #0
+          Spacing = 2
+          TabOrder = 0
+          Text = 'DirectivesFilterEdit'
+          OnButtonClick = FilterEditButtonClick
+          OnChange = DirectivesFilterEditChange
+          OnEnter = FilterEditEnter
+        end
+        object DirRefreshSpeedButton: TSpeedButton
+          AnchorSideRight.Control = DirOptionsSpeedButton
+          AnchorSideBottom.Control = DirectivesFilterEdit
+          AnchorSideBottom.Side = asrBottom
+          Left = 166
+          Height = 22
+          Hint = 'Refresh CodeExplorer'
+          Top = 1
+          Width = 23
+          Anchors = [akTop, akRight, akBottom]
+          Flat = True
+          ShowHint = True
+          ParentShowHint = False
+          OnClick = CodeRefreshSpeedButtonClick
+        end
+        object DirOptionsSpeedButton: TSpeedButton
+          AnchorSideRight.Control = DirTreeviewButtonPanel
+          AnchorSideRight.Side = asrBottom
+          AnchorSideBottom.Control = DirRefreshSpeedButton
+          AnchorSideBottom.Side = asrBottom
+          Left = 189
+          Height = 22
+          Hint = 'Options for CodeExplorer'
+          Top = 1
+          Width = 23
+          Anchors = [akTop, akRight, akBottom]
+          Flat = True
+          ShowHint = True
+          ParentShowHint = False
+          OnClick = OptionsSpeedButtonClick
+        end
+      end
+      object DirectivesTreeView: TTreeView
+        AnchorSideTop.Control = DirTreeviewButtonPanel
+        AnchorSideTop.Side = asrBottom
+        Left = 0
+        Height = 465
+        Top = 24
+        Width = 212
+        Align = alBottom
+        Anchors = [akTop, akLeft, akRight, akBottom]
+        BorderSpacing.Top = 1
+        PopupMenu = TreePopupmenu
+        ReadOnly = True
+        TabOrder = 1
+        Options = [tvoAutoItemHeight, tvoHideSelection, tvoKeepCollapsedNodes, tvoReadOnly, tvoShowButtons, tvoShowLines, tvoShowRoot, tvoToolTips, tvoThemedDraw]
+        OnDblClick = TreeviewDblClick
+        OnDeletion = TreeviewDeletion
+        OnKeyUp = TreeviewKeyDown
+      end
+    end
+  end
+  object Imagelist1: TImageList
+    Height = 18
+    Width = 18
+    Left = 64
+    Top = 64
+  end
+  object TreePopupmenu: TPopupMenu
+    OnPopup = TreePopupmenuPopup
+    Left = 64
+    Top = 128
+    object MenuItem1: TMenuItem
+      Caption = 'New Item1'
+      Visible = False
+    end
+  end
+  object IdleTimer1: TIdleTimer
+    AutoEnabled = True
+    Interval = 500
+    OnTimer = IdleTimer1Timer
+    Left = 64
+    Top = 192
+  end
+end
