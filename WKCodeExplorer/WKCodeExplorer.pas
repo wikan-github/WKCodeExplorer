@@ -661,36 +661,17 @@ var
   ACodeTool: TCodeTool;
   p: LongInt;
   NewNode: TCodeTreeNode;
-  DebugF: TextFile;
 begin
   Result := nil;
-  if CurNode = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CurNode nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CurNode = nil then exit;
   NodeData := TViewNodeData(CurNode);
   if NodeData = nil then exit;
   if NodeData.StartPos < 1 then exit;
   CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
-  if CodeBuffer = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CodeBuffer nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CodeBuffer = nil then exit;
   ACodeTool := nil;
   CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
-  if ACodeTool = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: ACodeTool nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if ACodeTool = nil then exit;
   p := NodeData.StartPos;
   NewNode := ACodeTool.FindDeepestNodeAtPos(p, false);
   if NewNode <> nil then begin
@@ -722,7 +703,6 @@ var
   FoundNode: TCodeTreeNode;
   Impls: TStringList;
   Out: string;
-  F: TextFile;
   I, J, K: Integer;
   S: string;
   CommentTag: string;
@@ -737,97 +717,29 @@ var
   Line: string;
   Rest: string;
   TrimmedLine: string;
-  DebugF: TextFile;
 begin
-  // Log entry
-  AssignFile(DebugF, '/tmp/wk-click-debug.log');
-  if FileExists('/tmp/wk-click-debug.log') then
-    Append(DebugF)
-  else
-    Rewrite(DebugF);
-  WriteLn(DebugF, 'click: entered');
-  CloseFile(DebugF);
-
   CurTreeView := GetCurrentTreeView;
-  if CurTreeView = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CurTreeView nil');
-    CloseFile(DebugF);
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: unknown');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CurTreeView = nil then exit;
   if tvoAllowMultiselect in CurTreeView.Options then
     CurItem := CurTreeView.GetFirstMultiSelected
   else
     CurItem := CurTreeView.Selected;
-  if CurItem = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CurItem nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CurItem = nil then exit;
   CurNode := TViewNodeData(CurItem.Data);
-  if CurNode = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CurNode nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CurNode = nil then exit;
   // Check if it's a class node
-  if not (CurNode.Desc = ctnTypeDefinition) then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: not ctnTypeDefinition, Desc=', Ord(CurNode.Desc));
-    CloseFile(DebugF);
-    exit;
-  end;
+  if not (CurNode.Desc = ctnTypeDefinition) then exit;
   FoundNode := FindClassCTNode(CurNode);
-  if FoundNode = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: FindClassCTNode nil');
-    CloseFile(DebugF);
-    exit;
-  end;
-  if not (FoundNode.FirstChild <> nil) then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: FirstChild nil');
-    CloseFile(DebugF);
-    exit;
-  end;
-  if not (FoundNode.FirstChild.Desc in AllClasses) then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: FirstChild.Desc not in AllClasses');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if FoundNode = nil then exit;
+  if not (FoundNode.FirstChild <> nil) then exit;
+  if not (FoundNode.FirstChild.Desc in AllClasses) then exit;
 
   // Load source file
   CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
-  if CodeBuffer = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: CodeBuffer nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if CodeBuffer = nil then exit;
   ACodeTool := nil;
   CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
-  if ACodeTool = nil then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: ACodeTool nil');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if ACodeTool = nil then exit;
 
   // Derive the class name from the CodeTools node; fall back to the tree label.
   // CurNode.Path is only assigned for ctnProcedure nodes (CreateNodePath),
@@ -835,13 +747,7 @@ begin
   AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
   if AClassName = '' then
     AClassName := CurItem.Text;
-  if AClassName = '' then begin
-    AssignFile(DebugF, '/tmp/wk-click-debug.log');
-    Append(DebugF);
-    WriteLn(DebugF, 'exit: AClassName empty');
-    CloseFile(DebugF);
-    exit;
-  end;
+  if AClassName = '' then exit;
 
   Source := CodeBuffer.Source;
 
@@ -954,25 +860,13 @@ begin
       SL.Free;
     end;
 
-    if (ClassStart < 1) or (ClassEnd < 1) then begin
-      AssignFile(DebugF, '/tmp/wk-click-debug.log');
-      Append(DebugF);
-      WriteLn(DebugF, 'exit: ClassStart/ClassEnd invalid, ClassStart=', ClassStart, ' ClassEnd=', ClassEnd);
-      CloseFile(DebugF);
-      exit;
-    end;
+    if (ClassStart < 1) or (ClassEnd < 1) then exit;
 
     // Build CLASSCOPY text
     Out := BuildClassCopyText(Source, AClassName, ClassStart, ClassEnd, Impls);
 
     // Set clipboard
     Clipboard.AsText := Out;
-
-    // Write to file
-    AssignFile(F, '/tmp/wk-copy-stage1.txt');
-    Rewrite(F);
-    WriteLn(F, Out);
-    CloseFile(F);
   finally
     Impls.Free;
   end;
@@ -1326,30 +1220,6 @@ begin
   WKCERenameIDEMenuCommand.Visible:=CanRename;
   WKCEJumpToImplementationIDEMenuCommand.Visible:=HasImplementation;
   // Enable Copy only for class nodes
-  // Debug log to /tmp/wk-popup-debug.log
-  begin
-    AssignFile(DebugF, '/tmp/wk-popup-debug.log');
-    if FileExists('/tmp/wk-popup-debug.log') then
-      Append(DebugF)
-    else
-      Rewrite(DebugF);
-    WriteLn(DebugF, 'CurItem<>nil=', CurItem <> nil);
-    if CurItem <> nil then begin
-      WriteLn(DebugF, 'CurItem.Text=', CurItem.Text);
-      if CurNode <> nil then begin
-        WriteLn(DebugF, 'CurNode.Desc=', Ord(CurNode.Desc), ' (', CurNode.Desc, ')');
-        WriteLn(DebugF, 'CurNode.CTNode<>nil=', CurNode.CTNode <> nil);
-        if CurNode.CTNode <> nil then begin
-          WriteLn(DebugF, 'CurNode.CTNode.Desc=', Ord(CurNode.CTNode.Desc), ' (', CurNode.CTNode.Desc, ')');
-          WriteLn(DebugF, 'CurNode.CTNode.FirstChild<>nil=', CurNode.CTNode.FirstChild <> nil);
-          if CurNode.CTNode.FirstChild <> nil then
-            WriteLn(DebugF, 'CurNode.CTNode.FirstChild.Desc=', Ord(CurNode.CTNode.FirstChild.Desc), ' (', CurNode.CTNode.FirstChild.Desc, ')');
-        end;
-      end else
-        WriteLn(DebugF, 'CurNode=nil');
-    end;
-    CloseFile(DebugF);
-  end;
   WKCopyMenuItem.Enabled := false;
   if CurItem <> nil then begin
     CurNode := TViewNodeData(CurItem.Data);
