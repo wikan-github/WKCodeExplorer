@@ -84,6 +84,8 @@ modules/
 *.ppu
 /opm
 
+/prompt-result
+
 tests/backup/
 tests/extract_names
 tests/after.txt

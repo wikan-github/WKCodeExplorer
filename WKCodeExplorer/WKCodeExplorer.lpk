@@ -31,6 +31,11 @@
         <UnitName Value="WKCodeExplOpts"/>
       </Item>
       <Item>
+        <Filename Value="WKPasteFormat.pas"/>
+        <Type Value="Unit"/>
+        <UnitName Value="WKPasteFormat"/>
+      </Item>
+      <Item>
         <Filename Value="WKCodeExplorer.lfm"/>
       </Item>
     </Files>

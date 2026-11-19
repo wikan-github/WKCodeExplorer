@@ -8,7 +8,7 @@ unit WKCodeExplorerRegister;
 interface
 
 uses
-  WKCodeExplorer, WKCodeExplOpts, LazarusPackageIntf;
+  WKCodeExplorer, WKCodeExplOpts, WKPasteFormat, LazarusPackageIntf;
 
 implementation
 
