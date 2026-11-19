@@ -30,7 +30,7 @@ type
     constructor Create;
     procedure Pub;
   published
-    procedure PubdXXX;
+    procedure Pubd;
   end;
 
 implementation
@@ -79,7 +79,7 @@ procedure TBeta.Pub;
 begin
 end;
 
-procedure TBeta.PubdXXX;
+procedure TBeta.Pubd;
 begin
 end;
 
