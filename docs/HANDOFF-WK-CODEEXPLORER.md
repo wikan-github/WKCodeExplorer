@@ -2,20 +2,17 @@
 
 Test programs (`PasteFormatTest.pas`, `CopyFormatTest.pas`) and `TestVisibility.pas` live in `~/projects/WKCopyPasteTest/`, outside the repo. The repo has no `WKCodeExplorer/tests/` folder.
 
-## Git state (as of ce428a6)
+## Git state (as of 40f20c5)
 
 ```
-$ git branch --show-current
-mmx-codeexplorer
-
 $ git log --oneline -4
+40f20c5 Place pasted class inside the interface type block; add {$M+} for published classes; copy implementation-node members
+34f86e6 Update WKCodeExplorer handoff with verified member copy and paste
 ce428a6 Paste MEMBER copy into selected class in WKCodeExplorer
 475902b Remove debug logging and copy file output from WKCodeExplorer
-335f260 Add WKCodeExplorer copy and paste for class members
-6537cce Fix TBeta.Pubd name in TestVisibility test unit
 
 $ git status --short -uall
- M docs/HANDOFF-WK-CODEEXPLORER.md
+ M tests/TestVisibility.pas
 ```
 
 ## 1. STATUS
@@ -28,10 +25,22 @@ $ git status --short -uall
 - MEMBER paste into a new class: **verified**.
 - MEMBER paste with a class selected in the WK tree: **verified** (member inserted into `TForm1` under its original visibility, routine renamed to `TForm1`).
 - Repeated paste shows `"Routine already exists"`.
+- Paste placement: a class is inserted inside the existing interface type block, before the
+  first column-zero var/const/resourcestring/threadvar, after the last declaration in the block.
+  A type line is added only when the unit has no interface type block. Verified in `umainForm.pas`
+  (`TForm1` block), `TestVisibility.pas` (enum block, class after `TBeta`), and a new unit with no
+  type section.
+- `{$M+}` is added above the `interface` line when the copied class has a `published` section and
+  the target lacks `{$M+}`. Verified: compile succeeds.
+- Undo: one `Ctrl+Z` removes the whole paste, including `{$M+}` and the `type` line.
+- Copy from an Implementation node (`THuman.Walk`, `THuman.Age`) produces the same text as the
+  Interface node. Verified by Notepad comparison.
+- Commit `40f20c5` contains the placement, `{$M+}`, comment rename and Implementation-copy
+  changes.
 
 ## 2. FILES CHANGED
 
-- `WKCodeExplorer/WKCodeExplorer.pas` — committed in `ce428a6` (`Paste MEMBER copy into selected class in WKCodeExplorer`): Copy/Paste menu items and handlers (class lookup via `FindClassCTNode`, clipboard copy/paste), editor insertions with caret adjustment and `type`-section handling, MEMBER copy (routines/properties with body) and MEMBER paste target handling.
+- `WKCodeExplorer/WKCodeExplorer.pas` — committed in `40f20c5` (`Place pasted class inside the interface type block; add {$M+} for published classes; copy implementation-node members`): Copy/Paste menu items and handlers (class lookup via `FindClassCTNode`, clipboard copy/paste), editor insertions with caret adjustment and placement inside the interface `type` block, automatic `{$M+}`, leading-comment rename, MEMBER copy (routines/properties with body) and MEMBER paste target handling.
 - `WKCodeExplorer/WKCopyFormat.pas` — new (committed earlier, `335f260`): helper for building `CLASSCOPY` clipboard text.
 - `WKCodeExplorer/WKPasteFormat.pas` — new (committed earlier, `335f260`): clipboard parsing, whole-identifier renaming, and class-declaration/routine extraction helpers for paste.
 - `WKCodeExplorer/WKCodeExplorer.lpk` — modified (committed earlier): package file list updated to include copy/paste units.
@@ -49,11 +58,19 @@ $ git status --short -uall
 - Paste fallback uses the tree label when `FindClassCTNode` fails, which can include an inheritance suffix such as `TForm1(TForm)`.
 - `CurPasteTV` is not checked for `nil` before use.
 - MEMBER paste test was run only in `umainForm.pas`.
-- Copy is disabled on the Implementation node (e.g. `THuman.Walk`). Member copy works only from the Interface node (e.g. `Walk`).
+- Copy is not available for enumerations or other non-class types (e.g. `TAppType`). Planned
+  after standalone routines.
+- Standalone routines, variables and types outside a class: Copy and Paste not implemented.
+- `tests/TestVisibility.pas` has uncommitted local edits (enum types, a `const` section in
+  `TBeta`, and no routine bodies in the implementation section). Not part of any commit.
 
 ## 4. NEXT STEPS
 
-- Optional: push `mmx-explorer-m1` and `mmx-explorer-m2` if not yet on GitHub. (Debug logging removal was completed in `475902b`; test-file `{$M+}` change not needed per team decision.)
+1. Standalone routines, variables and types plan (answer the five questions first).
+2. Enum and other type copy/paste (`//MMWIN:TYPESCOPY`).
+3. Delete feature for classes and members (correct the plan's question 6b first, and test undo
+   grouping in the IDE).
+4. Optional push of `mmx-explorer-m1` and `mmx-explorer-m2`.
 
 ## 5. TEST PROCEDURE
 
