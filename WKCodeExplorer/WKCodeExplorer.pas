@@ -661,6 +661,23 @@ var
   ACodeTool: TCodeTool;
   p: LongInt;
   NewNode: TCodeTreeNode;
+  DotPos: Integer;
+  OwnerClassName: string;
+
+  function FindTypeNode(ANode: TCodeTreeNode; const AName: string): TCodeTreeNode;
+  begin
+    Result := nil;
+    while ANode <> nil do begin
+      if (ANode.Desc = ctnTypeDefinition)
+      and SameText(ACodeTool.ExtractDefinitionName(ANode), AName) then
+        Exit(ANode);
+      Result := FindTypeNode(ANode.FirstChild, AName);
+      if Result <> nil then
+        Exit;
+      ANode := ANode.NextBrother;
+    end;
+  end;
+
 begin
   Result := nil;
   if CurNode = nil then exit;
@@ -689,6 +706,18 @@ begin
     end;
     NewNode := NewNode.Parent;
   end;
+  // Implementation method bodies are not nested under their class in the
+  // code tree, so walking up from them never reaches ctnTypeDefinition.
+  // Resolve the owning class from the node path (e.g. "THuman.Walk").
+  if NodeData.Desc = ctnProcedure then
+  begin
+    DotPos := LastDelimiter('.', NodeData.Path);
+    if DotPos > 1 then
+    begin
+      OwnerClassName := Copy(NodeData.Path, 1, DotPos - 1);
+      Result := FindTypeNode(ACodeTool.Tree.Root, OwnerClassName);
+    end;
+  end;
 end;
 
 procedure TWKCodeExplorerView.WKCopyMenuItemClick(Sender: TObject);
@@ -714,6 +743,13 @@ const
   function IsIdentChar2(C: Char): Boolean;
   begin
     Result := C in ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+  end;
+
+  function StartsWithMemberPrefix(const AText, APrefix: string): Boolean;
+  begin
+    Result := (Pos(APrefix, AText) = 1) and
+      ((Length(AText) = Length(APrefix)) or
+       not IsIdentChar2(AText[Length(APrefix) + 1]));
   end;
 
 var
@@ -742,6 +778,7 @@ var
   Rest: string;
   TrimmedLine: string;
   MemberLineIdx, VisLineIdx, P: Integer;
+  DotPos: Integer;
   VisName, MemberDeclText, RoutineText, MemberName: string;
 begin
   CurTreeView := GetCurrentTreeView;
@@ -940,11 +977,46 @@ begin
       end;
       if (ClassStart < 1) or (ClassEnd < 1) then exit;
 
-      MemberCTNode := ACodeTool.FindDeepestNodeAtPos(CurNode.StartPos, false);
-      if MemberCTNode = nil then
-        MemberLineIdx := PosToLineIndex(Source, CurNode.StartPos)
-      else
-        MemberLineIdx := PosToLineIndex(Source, MemberCTNode.StartPos);
+      // Implementation nodes label the routine as "THuman.Walk"; take the
+      // part after the dot so the member name matches the Interface node.
+      MemberName := '';
+      S := CurItem.Text;
+      DotPos := Pos('.', S);
+      if DotPos > 0 then
+        S := Copy(S, DotPos + 1, Length(S));
+      for K := 1 to Length(S) do
+        if S[K] in ['A'..'Z', 'a'..'z', '0'..'9', '_'] then
+          MemberName := MemberName + S[K]
+        else
+          Break;
+
+      // Find the Interface declaration inside the class body. The
+      // implementation node's StartPos points at the body, so it cannot be
+      // used as the declaration line.
+      MemberLineIdx := -1;
+      for I := ClassStart - 1 to ClassEnd - 1 do
+      begin
+        S := Trim(SL[I]);
+        if StartsWithMemberPrefix(S, 'procedure ' + MemberName)
+        or StartsWithMemberPrefix(S, 'function ' + MemberName)
+        or StartsWithMemberPrefix(S, 'constructor ' + MemberName)
+        or StartsWithMemberPrefix(S, 'destructor ' + MemberName)
+        or StartsWithMemberPrefix(S, 'operator ' + MemberName)
+        or StartsWithMemberPrefix(S, 'class procedure ' + MemberName)
+        or StartsWithMemberPrefix(S, 'class function ' + MemberName) then
+        begin
+          MemberLineIdx := I;
+          Break;
+        end;
+      end;
+      if MemberLineIdx < 0 then
+      begin
+        MemberCTNode := ACodeTool.FindDeepestNodeAtPos(CurNode.StartPos, false);
+        if MemberCTNode = nil then
+          MemberLineIdx := PosToLineIndex(Source, CurNode.StartPos)
+        else
+          MemberLineIdx := PosToLineIndex(Source, MemberCTNode.StartPos);
+      end;
 
       VisLineIdx := -1;
       VisName := 'public';
@@ -962,12 +1034,6 @@ begin
       MemberDeclText := SL[MemberLineIdx];
 
       RoutineText := '';
-      MemberName := '';
-      for K := 1 to Length(CurItem.Text) do
-        if CurItem.Text[K] in ['A'..'Z', 'a'..'z', '0'..'9', '_'] then
-          MemberName := MemberName + CurItem.Text[K]
-        else
-          Break;
       InImpl := False;
       I := 0;
       while I < SL.Count do
@@ -1102,8 +1168,9 @@ var
   InsertedLinesAbove: Integer;
   I, J, ImplSectionLine, FinalEndLine: Integer;
   ClassIdx, ClassEndIdx, ClassLineIdx, EndClassIdx: Integer;
-  MemberInsertLine, InterfaceIdx: Integer;
-  RoutineExists, HasClass, HasTypeInInterface: Boolean;
+  MemberInsertLine, InterfaceIdx, InterfaceLineNo: Integer;
+  TypeLineIdx, ClassInsertLine, TargetIndent, CurrentIndent: Integer;
+  RoutineExists, HasClass, HasPublished: Boolean;
   CurPasteTV: TCustomTreeView;
   CurPasteItem: TTreeNode;
   CurPasteNodeData: TViewNodeData;
@@ -1111,6 +1178,48 @@ var
   PasteCodeBuffer: TCodeBuffer;
   PasteCodeTool: TCodeTool;
   TargetClassName, CheckHeader: string;
+
+  function LineIndent(const AText: string): Integer;
+  begin
+    Result := 0;
+    while (Result < Length(AText)) and (AText[Result + 1] = ' ') do
+      Inc(Result);
+  end;
+
+  function ShiftIndent(const AText: string; ADelta: Integer): string;
+  var
+    Tmp: TStringList;
+    K, N: Integer;
+    L: string;
+  begin
+    Result := '';
+    if ADelta = 0 then Exit(AText);
+    Tmp := TStringList.Create;
+    try
+      Tmp.Text := AText;
+      for K := 0 to Tmp.Count - 1 do
+      begin
+        L := Tmp[K];
+        if L = '' then
+          Continue;
+        if ADelta > 0 then
+          L := StringOfChar(' ', ADelta) + L
+        else
+        begin
+          N := -ADelta;
+          while (N > 0) and (L <> '') and (L[1] = ' ') do
+          begin
+            Delete(L, 1, 1);
+            Dec(N);
+          end;
+        end;
+        Tmp[K] := L;
+      end;
+      Result := Tmp.Text;
+    finally
+      Tmp.Free;
+    end;
+  end;
 
   function CountInsertedLines(const AText: string): Integer;
   var
@@ -1137,6 +1246,21 @@ var
     Syn.SelText := AText;
     if ALine <= SavedCaret.Y then
       Inc(InsertedLinesAbove, CountInsertedLines(AText));
+  end;
+
+  function IsSectionLine(const ALine: string): Boolean;
+  var
+    T: string;
+    P: Integer;
+  begin
+    Result := (ALine <> '') and (ALine[1] <> ' ') and (ALine[1] <> #9);
+    if not Result then Exit;
+    T := Trim(ALine);
+    P := Pos(' ', T);
+    if P > 0 then
+      T := Copy(T, 1, P - 1);
+    Result := SameText(T, 'var') or SameText(T, 'const') or
+      SameText(T, 'resourcestring') or SameText(T, 'threadvar');
   end;
 
 begin
@@ -1281,10 +1405,88 @@ begin
       begin
         Decl := RenameWholeIdentifier(ExtractClassDeclaration(ClipText),
           OldName, NewName);
-        // Do not duplicate a { Name } comment already above the insertion point.
-        if ImplSectionLine > 1 then
+        // Rename only the copied leading "{ OldName }" comment to "{ NewName }".
+        J := Pos(CRLF, Decl);
+        if J > 0 then
         begin
-          S := Trim(Lines[ImplSectionLine - 2]);
+          S := Copy(Decl, 1, J - 1);
+          if Trim(S) = '{ ' + OldName + ' }' then
+            Decl := '{ ' + NewName + ' }' + Copy(Decl, J, Length(Decl));
+        end;
+        // Locate the interface type block. Only a column-zero "type" line
+        // counts, so a class-level "type" inside a class body is never matched.
+        TypeLineIdx := -1;
+        InterfaceIdx := -1;
+        for I := 0 to ImplSectionLine - 2 do
+        begin
+          S := Lines[I];
+          if (InterfaceIdx < 0) and SameText(Trim(S), 'interface') then
+            InterfaceIdx := I
+          else if (InterfaceIdx >= 0) and (S <> '')
+          and (S[1] <> ' ') and (S[1] <> #9)
+          and SameText(Trim(S), 'type') then
+          begin
+            TypeLineIdx := I;
+            Break;
+          end;
+        end;
+
+        // Insert before the first column-zero var/const/resourcestring/threadvar
+        // after the type line, otherwise before implementation.
+        ClassInsertLine := ImplSectionLine;
+        if TypeLineIdx >= 0 then
+        begin
+          for I := TypeLineIdx + 1 to ImplSectionLine - 2 do
+            if IsSectionLine(Lines[I]) then
+            begin
+              ClassInsertLine := I + 1;
+              Break;
+            end;
+        end
+        else if InterfaceIdx >= 0 then
+        begin
+          for I := InterfaceIdx + 1 to ImplSectionLine - 2 do
+            if IsSectionLine(Lines[I]) then
+            begin
+              ClassInsertLine := I + 1;
+              Break;
+            end;
+        end;
+
+        // Match the indentation of the first declaration in the type block.
+        // With no type block (or no declaration) use two spaces.
+        TargetIndent := 2;
+        if TypeLineIdx >= 0 then
+          for I := TypeLineIdx + 1 to ClassInsertLine - 2 do
+          begin
+            S := Trim(Lines[I]);
+            if (S <> '') and (Lines[I][1] = ' ') and
+               (S[1] <> '{') and (Pos('//', S) <> 1) then
+            begin
+              TargetIndent := LineIndent(Lines[I]);
+              Break;
+            end;
+          end;
+
+        CurrentIndent := 0;
+        SL := TStringList.Create;
+        try
+          SL.Text := Decl;
+          for I := 0 to SL.Count - 1 do
+            if Pos('= class', SL[I]) > 0 then
+            begin
+              CurrentIndent := LineIndent(SL[I]);
+              Break;
+            end;
+        finally
+          SL.Free;
+        end;
+        Decl := ShiftIndent(Decl, TargetIndent - CurrentIndent);
+
+        // Do not duplicate a { Name } comment already above the insertion point.
+        if ClassInsertLine > 1 then
+        begin
+          S := Trim(Lines[ClassInsertLine - 2]);
           if Pos('{ ' + NewName + ' }', S) > 0 then
           begin
             J := Pos(CRLF, Decl);
@@ -1296,22 +1498,37 @@ begin
             end;
           end;
         end;
-        HasTypeInInterface := False;
-        InterfaceIdx := -1;
-        for I := 0 to ImplSectionLine - 2 do
-        begin
-          S := Trim(Lines[I]);
-          if (InterfaceIdx < 0) and SameText(S, 'interface') then
-            InterfaceIdx := I
-          else if (InterfaceIdx >= 0) and SameText(S, 'type') then
-          begin
-            HasTypeInInterface := True;
-            Break;
-          end;
-        end;
-        if not HasTypeInInterface then
+        // Only the case with no interface "type" line adds a "type" line.
+        if TypeLineIdx < 0 then
           Decl := 'type' + CRLF + CRLF + Decl;
-        InsertAtLine(ImplSectionLine, Decl + CRLF);
+        InsertAtLine(ClassInsertLine, Decl + CRLF);
+        // Add {$M+} when the copied class has a published section and the
+        // target unit does not already enable published fields.
+        HasPublished := False;
+        SL := TStringList.Create;
+        try
+          SL.Text := ClipText;
+          for I := 0 to SL.Count - 1 do
+            if SameText(Trim(SL[I]), 'published') then
+            begin
+              HasPublished := True;
+              Break;
+            end;
+        finally
+          SL.Free;
+        end;
+        if HasPublished and (Pos('{$M+}', UpperCase(EditorText)) = 0) then
+        begin
+          InterfaceLineNo := -1;
+          for I := 0 to Lines.Count - 1 do
+            if SameText(Trim(Lines[I]), 'interface') then
+            begin
+              InterfaceLineNo := I + 1;
+              Break;
+            end;
+          if InterfaceLineNo > 0 then
+            InsertAtLine(InterfaceLineNo, '{$M+}' + CRLF);
+        end;
         Msg := 'Pasted class as ' + NewName;
       end
       else
