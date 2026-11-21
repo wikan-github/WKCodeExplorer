@@ -340,6 +340,497 @@ implementation
 
 {$R *.lfm}
 
+{ Helpers for standalone-routine copy/paste (//MMWIN:MODULECOPY). }
+
+function WKIsIdentChar(C: Char): Boolean;
+begin
+  Result := C in ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+end;
+
+function WKLineIndent(const S: string): Integer;
+begin
+  Result := 0;
+  while (Result < Length(S)) and (S[Result + 1] = ' ') do
+    Inc(Result);
+end;
+
+function WKRoutineKeywordLenAt(const S: string; P: Integer): Integer;
+begin
+  Result := 0;
+  if SameText(Copy(S, P, 16), 'class procedure ') then Exit(16);
+  if SameText(Copy(S, P, 15), 'class function ') then Exit(15);
+  if SameText(Copy(S, P, 10), 'procedure ') then Exit(10);
+  if SameText(Copy(S, P, 9), 'function ') then Exit(9);
+  if SameText(Copy(S, P, 12), 'constructor ') then Exit(12);
+  if SameText(Copy(S, P, 11), 'destructor ') then Exit(11);
+  if SameText(Copy(S, P, 9), 'operator ') then Exit(9);
+end;
+
+function WKNameStartPos(const S: string): Integer;
+var
+  P, KL: Integer;
+begin
+  Result := 0;
+  P := 1;
+  while (P <= Length(S)) and (S[P] in [' ', #9]) do
+    Inc(P);
+  KL := WKRoutineKeywordLenAt(S, P);
+  if KL = 0 then Exit;
+  Result := P + KL;
+end;
+
+function WKHeaderName(const Header: string): string;
+var
+  P, E: Integer;
+begin
+  Result := '';
+  P := WKNameStartPos(Header);
+  if P = 0 then Exit;
+  E := P;
+  while (E <= Length(Header)) and (WKIsIdentChar(Header[E]) or (Header[E] = '.')) do
+    Inc(E);
+  Result := Copy(Header, P, E - P);
+end;
+
+// Lowercase the parameter/result part, drop whitespace and default values.
+function WKNormalizeParams(const S: string): string;
+var
+  I, Depth: Integer;
+  Ch: Char;
+  InStr: Boolean;
+begin
+  Result := '';
+  InStr := False;
+  I := 1;
+  while I <= Length(S) do
+  begin
+    Ch := S[I];
+    if InStr then
+    begin
+      Result := Result + Ch;
+      if Ch = '''' then
+      begin
+        if (I < Length(S)) and (S[I + 1] = '''') then
+        begin
+          Result := Result + '''';
+          Inc(I, 2);
+          Continue;
+        end;
+        InStr := False;
+      end;
+      Inc(I);
+      Continue;
+    end;
+    case Ch of
+      '''':
+        begin
+          InStr := True;
+          Result := Result + Ch;
+          Inc(I);
+        end;
+      ' ', #9, #10, #13, ';':
+        Inc(I);
+      '=':
+        begin
+          Inc(I);
+          Depth := 0;
+          while I <= Length(S) do
+          begin
+            Ch := S[I];
+            if Ch = '''' then
+            begin
+              Inc(I);
+              while I <= Length(S) do
+              begin
+                if S[I] = '''' then
+                begin
+                  if (I < Length(S)) and (S[I + 1] = '''') then
+                    Inc(I, 2)
+                  else
+                  begin
+                    Inc(I);
+                    Break;
+                  end;
+                end
+                else
+                  Inc(I);
+              end;
+              Continue;
+            end;
+            if Ch = '(' then
+              Inc(Depth)
+            else if Ch = ')' then
+            begin
+              if Depth = 0 then Break;
+              Dec(Depth);
+            end
+            else if (Ch = ',') and (Depth = 0) then
+              Break
+            else if Ch = ';' then
+              Break;
+            Inc(I);
+          end;
+        end;
+      'A'..'Z':
+        begin
+          Result := Result + LowerCase(Ch);
+          Inc(I);
+        end;
+      else
+        begin
+          Result := Result + Ch;
+          Inc(I);
+        end;
+    end;
+  end;
+end;
+
+// Keeps only the routine signature: everything up to the first top-level ';'.
+// Trailing directives (overload, reintroduce, virtual, override, dynamic,
+// abstract, inline, forward, cdecl, stdcall, register, external, message, ...)
+// follow that ';' and must not take part in parameter-list comparisons.
+function WKStripRoutineDirectives(const S: string): string;
+var
+  I, Depth: Integer;
+  Ch: Char;
+  InStr: Boolean;
+begin
+  Result := S;
+  Depth := 0;
+  InStr := False;
+  I := 1;
+  while I <= Length(S) do
+  begin
+    Ch := S[I];
+    if InStr then
+    begin
+      if Ch = '''' then
+      begin
+        if (I < Length(S)) and (S[I + 1] = '''') then
+          Inc(I)
+        else
+          InStr := False;
+      end;
+    end
+    else
+    begin
+      case Ch of
+        '''':
+          InStr := True;
+        '(':
+          Inc(Depth);
+        ')':
+          if Depth > 0 then Dec(Depth);
+        ';':
+          if Depth = 0 then
+          begin
+            Result := Copy(S, 1, I);
+            Exit;
+          end;
+      end;
+    end;
+    Inc(I);
+  end;
+end;
+
+function WKNormHeaderTail(const Header: string): string;
+var
+  P: Integer;
+begin
+  Result := '';
+  P := WKNameStartPos(Header);
+  if P = 0 then Exit;
+  while (P <= Length(Header)) and (WKIsIdentChar(Header[P]) or (Header[P] = '.')) do
+    Inc(P);
+  Result := WKNormalizeParams(WKStripRoutineDirectives(Copy(Header, P, Length(Header))));
+end;
+
+// Returns the 0-based index of the line holding the ';' that closes the header.
+function WKHeaderEndLine(Lines: TStringList; StartIdx: Integer): Integer;
+var
+  I, J, Depth: Integer;
+  S: string;
+  InStr, InBrace, InParen, InLine: Boolean;
+begin
+  Result := StartIdx;
+  if (Lines = nil) or (StartIdx < 0) or (StartIdx >= Lines.Count) then Exit;
+  Depth := 0;
+  InStr := False;
+  InBrace := False;
+  InParen := False;
+  InLine := False;
+  for I := StartIdx to Lines.Count - 1 do
+  begin
+    S := Lines[I];
+    J := 1;
+    while J <= Length(S) do
+    begin
+      if InLine then Break;
+      if InStr then
+      begin
+        if S[J] = '''' then
+        begin
+          if (J < Length(S)) and (S[J + 1] = '''') then
+            Inc(J)
+          else
+            InStr := False;
+        end;
+      end
+      else if InBrace then
+      begin
+        if S[J] = '}' then InBrace := False;
+      end
+      else if InParen then
+      begin
+        if (S[J] = '*') and (J < Length(S)) and (S[J + 1] = ')') then
+        begin
+          InParen := False;
+          Inc(J);
+        end;
+      end
+      else
+      begin
+        case S[J] of
+          '''': InStr := True;
+          '{': InBrace := True;
+          '(':
+            begin
+              if (J < Length(S)) and (S[J + 1] = '*') then
+              begin
+                InParen := True;
+                Inc(J);
+              end
+              else
+                Inc(Depth);
+            end;
+          ')':
+            if Depth > 0 then Dec(Depth);
+          ';':
+            if Depth = 0 then
+            begin
+              Result := I;
+              Exit;
+            end;
+          '/':
+            if (J < Length(S)) and (S[J + 1] = '/') then InLine := True;
+        end;
+      end;
+      Inc(J);
+    end;
+    InLine := False;
+  end;
+end;
+
+function WKJoinLineRange(Lines: TStringList; StartIdx, EndIdx: Integer): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := StartIdx to EndIdx do
+  begin
+    if I = StartIdx then
+      Result := Lines[I]
+    else
+      Result := Result + #13#10 + Lines[I];
+  end;
+end;
+
+function WKFindRoutineHeader(Lines: TStringList; FromIdx, ToIdx: Integer;
+  const AName, AParams: string; AColumnZero, AAllowDotted: Boolean): Integer;
+var
+  I, E, Indent: Integer;
+  S, Header, N: string;
+begin
+  Result := -1;
+  if (Lines = nil) or (AName = '') then Exit;
+  if FromIdx < 0 then FromIdx := 0;
+  if ToIdx >= Lines.Count then ToIdx := Lines.Count - 1;
+  for I := FromIdx to ToIdx do
+  begin
+    S := Lines[I];
+    Indent := WKLineIndent(S);
+    if AColumnZero and (Indent <> 0) then Continue;
+    if (not AColumnZero) and (Indent = 0) then Continue;
+    if WKRoutineKeywordLenAt(S, Indent + 1) = 0 then Continue;
+    E := WKHeaderEndLine(Lines, I);
+    Header := WKJoinLineRange(Lines, I, E);
+    N := WKHeaderName(Header);
+    if N = '' then Continue;
+    if (not AAllowDotted) and (Pos('.', N) > 0) then Continue;
+    if SameText(N, AName) and (WKNormHeaderTail(Header) = AParams) then
+      Exit(I);
+  end;
+end;
+
+// Header line to the first 'end;' at the same indentation (nested routines are
+// indented deeper and are therefore part of the body).
+function WKFindRoutineEndLine(Lines: TStringList; HeaderIdx: Integer): Integer;
+var
+  Indent, I: Integer;
+  T: string;
+begin
+  Result := -1;
+  if (Lines = nil) or (HeaderIdx < 0) or (HeaderIdx >= Lines.Count) then Exit;
+  Indent := WKLineIndent(Lines[HeaderIdx]);
+  for I := HeaderIdx + 1 to Lines.Count - 1 do
+  begin
+    T := Trim(Lines[I]);
+    if (T = 'end;') and (WKLineIndent(Lines[I]) = Indent) then
+      Exit(I);
+  end;
+end;
+
+function WKIndentText(const Text: string; Count: Integer): string;
+var
+  SL: TStringList;
+  I: Integer;
+  Pad: string;
+begin
+  Result := '';
+  SL := TStringList.Create;
+  try
+    SL.Text := Text;
+    Pad := StringOfChar(' ', Count);
+    for I := 0 to SL.Count - 1 do
+      if SL[I] <> '' then
+        SL[I] := Pad + SL[I];
+    Result := SL.Text;
+    while (Result <> '') and (Result[Length(Result)] in [#10, #13]) do
+      Delete(Result, Length(Result), 1);
+  finally
+    SL.Free;
+  end;
+end;
+
+// Every paste ends with exactly one empty line after its block: append one
+// CRLF more than the block already has, but do nothing when the text already
+// ends with a blank line. Nothing is ever prepended.
+function WKWithTrailingBlankLine(const Text: string): string;
+var
+  L: Integer;
+begin
+  Result := Text;
+  L := Length(Result);
+  if L = 0 then Exit;
+  // Already followed by an empty line?
+  if (L >= 4) and (Copy(Result, L - 3, 4) = #13#10#13#10) then
+    Exit;
+  if (L >= 2) and ((Copy(Result, L - 1, 2) = #10#10) or
+     (Copy(Result, L - 1, 2) = #13#13)) then
+    Exit;
+  if (L >= 2) and (Copy(Result, L - 1, 2) = #13#10) then
+    Result := Result + #13#10
+  else if Result[L] = #10 then
+    Result := Result + #10
+  else if Result[L] = #13 then
+    Result := Result + #13
+  else
+    Result := Result + #13#10 + #13#10;
+end;
+
+function WKDequalifyMemberBlock(const Block, Owner: string): string;
+var
+  P: Integer;
+begin
+  Result := Block;
+  if Owner = '' then Exit;
+  P := WKNameStartPos(Result);
+  if P = 0 then Exit;
+  if SameText(Copy(Result, P, Length(Owner) + 1), Owner + '.') then
+    Delete(Result, P, Length(Owner) + 1);
+end;
+
+function WKQualifyRoutineHeader(const Block, Owner: string): string;
+var
+  P: Integer;
+begin
+  Result := Block;
+  if Owner = '' then Exit;
+  P := WKNameStartPos(Result);
+  if P = 0 then Exit;
+  if SameText(Copy(Result, P, Length(Owner) + 1), Owner + '.') then Exit;
+  Insert(Owner + '.', Result, P);
+end;
+
+function WKIsModuleCopyText(const Text: string): Boolean;
+var
+  SL: TStringList;
+  I: Integer;
+begin
+  Result := False;
+  SL := TStringList.Create;
+  try
+    SL.Text := Text;
+    for I := 0 to SL.Count - 1 do
+    begin
+      if Trim(SL[I]) = '' then Continue;
+      Result := SameText(Trim(SL[I]), '//MMWIN:MODULECOPY');
+      Exit;
+    end;
+  finally
+    SL.Free;
+  end;
+end;
+
+function WKParseModuleCopy(const Text: string;
+  out Vis, ItemName, Decl, Body: string): Boolean;
+var
+  SL: TStringList;
+  I, IfaceIdx, ImplIdx, EndIdx: Integer;
+  S: string;
+
+  function RangeText(AStart, AEnd: Integer): string;
+  var
+    K: Integer;
+  begin
+    while (AStart <= AEnd) and (Trim(SL[AStart]) = '') do Inc(AStart);
+    while (AEnd >= AStart) and (Trim(SL[AEnd]) = '') do Dec(AEnd);
+    Result := '';
+    for K := AStart to AEnd do
+      if K = AStart then
+        Result := SL[K]
+      else
+        Result := Result + #13#10 + SL[K];
+  end;
+
+begin
+  Result := False;
+  Vis := 'PUBLIC';
+  ItemName := '';
+  Decl := '';
+  Body := '';
+  SL := TStringList.Create;
+  try
+    SL.Text := Text;
+    IfaceIdx := -1;
+    ImplIdx := -1;
+    EndIdx := -1;
+    for I := 0 to SL.Count - 1 do
+    begin
+      S := Trim(SL[I]);
+      if SameText(Copy(S, 1, 6), '//VIS:') then
+        Vis := UpperCase(Trim(Copy(S, 7, Length(S))));
+      if SameText(Copy(S, 1, 7), '//NAME:') then
+        ItemName := Trim(Copy(S, 8, Length(S)));
+      if (IfaceIdx < 0) and SameText(S, 'interface') then
+        IfaceIdx := I
+      else if (ImplIdx < 0) and SameText(S, 'implementation') then
+        ImplIdx := I
+      else if (ImplIdx >= 0) and SameText(S, 'end.') then
+      begin
+        EndIdx := I;
+        Break;
+      end;
+    end;
+    if (IfaceIdx < 0) or (ImplIdx < 0) or (EndIdx < 0) then Exit;
+    Decl := RangeText(IfaceIdx + 1, ImplIdx - 1);
+    Body := RangeText(ImplIdx + 1, EndIdx - 1);
+    Result := True;
+  finally
+    SL.Free;
+  end;
+end;
+
 type
 
   { TViewNodeData }
@@ -780,6 +1271,116 @@ var
   MemberLineIdx, VisLineIdx, P: Integer;
   DotPos: Integer;
   VisName, MemberDeclText, RoutineText, MemberName: string;
+
+  // Standalone routine (not a class member): //MMWIN:MODULECOPY.
+  // Interface declaration => declaration + body; implementation only => body.
+  procedure CopyStandaloneRoutine;
+  var
+    Buf: TCodeBuffer;
+    Tool: TCodeTool;
+    Node: TCodeTreeNode;
+    Src: string;
+    TextLines: TStringList;
+    ImplIdx, SelLine, HdrEnd, BodyStart, BodyEnd, DeclLine, LI: Integer;
+    LVis, LDecl, LBody, LName, LParams, HText, OutText: string;
+  begin
+    Buf := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if Buf = nil then Exit;
+    Tool := nil;
+    CodeToolBoss.Explore(Buf, Tool, false);
+    if Tool = nil then Exit;
+    Src := Buf.Source;
+    TextLines := TStringList.Create;
+    try
+      TextLines.Text := Src;
+      ImplIdx := -1;
+      for LI := 0 to TextLines.Count - 1 do
+        if SameText(Trim(TextLines[LI]), 'implementation') then
+        begin
+          ImplIdx := LI;
+          Break;
+        end;
+      if ImplIdx < 0 then Exit;
+
+      SelLine := PosToLineIndex(Src, CurNode.StartPos);
+      Node := Tool.FindDeepestNodeAtPos(CurNode.StartPos, false);
+      if (Node = nil) or (Node.Desc <> ctnProcedure) then Exit;
+      LName := Tool.ExtractProcName(Node, []);
+      if LName = '' then Exit;
+      if Pos('.', LName) > 0 then
+      begin
+        MessageDlg('Cannot copy: ' + LName + ' is a nested routine',
+          mtInformation, [mbOK], 0);
+        Exit;
+      end;
+
+      LVis := 'PRIVATE';
+      LDecl := '';
+      if SelLine < ImplIdx then
+      begin
+        // Selected the interface declaration: copy declaration + body.
+        HdrEnd := WKHeaderEndLine(TextLines, SelLine);
+        LDecl := WKJoinLineRange(TextLines, SelLine, HdrEnd);
+        LParams := WKNormHeaderTail(LDecl);
+        BodyStart := WKFindRoutineHeader(TextLines, ImplIdx + 1,
+          TextLines.Count - 1, LName, LParams, True, False);
+        if BodyStart < 0 then
+        begin
+          MessageDlg('Cannot copy: implementation body not found for ' + LName,
+            mtError, [mbOK], 0);
+          Exit;
+        end;
+        BodyEnd := WKFindRoutineEndLine(TextLines, BodyStart);
+        if BodyEnd < 0 then
+        begin
+          MessageDlg('Cannot copy: implementation body not found for ' + LName,
+            mtError, [mbOK], 0);
+          Exit;
+        end;
+        LBody := WKJoinLineRange(TextLines, BodyStart, BodyEnd);
+        LVis := 'PUBLIC';
+      end
+      else
+      begin
+        // Selected an implementation body: body only, unless the same routine
+        // is also declared in the interface (then keep both parts together).
+        HdrEnd := WKHeaderEndLine(TextLines, SelLine);
+        HText := WKJoinLineRange(TextLines, SelLine, HdrEnd);
+        LParams := WKNormHeaderTail(HText);
+        DeclLine := WKFindRoutineHeader(TextLines, 0, ImplIdx - 1,
+          LName, LParams, True, False);
+        BodyEnd := WKFindRoutineEndLine(TextLines, SelLine);
+        if BodyEnd < 0 then
+        begin
+          MessageDlg('Cannot copy: implementation body not found for ' + LName,
+            mtError, [mbOK], 0);
+          Exit;
+        end;
+        LBody := WKJoinLineRange(TextLines, SelLine, BodyEnd);
+        if DeclLine >= 0 then
+        begin
+          HdrEnd := WKHeaderEndLine(TextLines, DeclLine);
+          LDecl := WKJoinLineRange(TextLines, DeclLine, HdrEnd);
+          LVis := 'PUBLIC';
+        end;
+      end;
+
+      OutText := '//MMWIN:MODULECOPY' + CRLF;
+      OutText := OutText + '//VIS:' + LVis + CRLF;
+      OutText := OutText + '//NAME:' + LName + CRLF;
+      OutText := OutText + 'unit _MM_Copy_Buffer_;' + CRLF + CRLF;
+      OutText := OutText + 'interface' + CRLF + CRLF;
+      if LDecl <> '' then
+        OutText := OutText + LDecl + CRLF + CRLF;
+      OutText := OutText + 'implementation' + CRLF + CRLF;
+      OutText := OutText + LBody + CRLF + CRLF;
+      OutText := OutText + 'end.' + CRLF;
+      Clipboard.AsText := OutText;
+    finally
+      TextLines.Free;
+    end;
+  end;
+
 begin
   CurTreeView := GetCurrentTreeView;
   if CurTreeView = nil then exit;
@@ -938,9 +1539,14 @@ begin
 
   if (CurNode.Desc = ctnProcedure) or (CurNode.Desc = ctnProperty) then begin
     FoundNode := FindClassCTNode(CurNode);
-    if FoundNode = nil then exit;
-    if not (FoundNode.FirstChild <> nil) then exit;
-    if not (FoundNode.FirstChild.Desc in AllClasses) then exit;
+    if (FoundNode = nil) or (FoundNode.FirstChild = nil)
+    or (not (FoundNode.FirstChild.Desc in AllClasses)) then
+    begin
+      // Not a class member: a standalone routine. A property cannot be one.
+      if CurNode.Desc = ctnProcedure then
+        CopyStandaloneRoutine;
+      exit;
+    end;
 
     CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
     if CodeBuffer = nil then exit;
@@ -1177,7 +1783,7 @@ var
   PasteTargetNode: TCodeTreeNode;
   PasteCodeBuffer: TCodeBuffer;
   PasteCodeTool: TCodeTool;
-  TargetClassName, CheckHeader: string;
+  TargetClassName, CheckHeader, MemberName: string;
 
   function LineIndent(const AText: string): Integer;
   begin
@@ -1263,10 +1869,208 @@ var
       SameText(T, 'resourcestring') or SameText(T, 'threadvar');
   end;
 
+  // //MMWIN:MODULECOPY: paste a standalone routine. A selected class node
+  // makes it a public method; otherwise it becomes a unit-level routine
+  // (interface declaration + implementation body, or the body alone when it
+  // was private in the source).
+  procedure PasteStandaloneRoutine;
+  var
+    Vis, RName, RDecl, RBody, Owner, T, Params: string;
+    DeclSource, BodyHeader, TargetVis: string;
+    SL2, HL: TStringList;
+    ImplLine2, FinalLine2, CIdx, CEndIdx, K: Integer;
+    SectIdx, NextSect, InsLine: Integer;
+    Duplicate: Boolean;
+  begin
+    if not WKParseModuleCopy(ClipText, Vis, RName, RDecl, RBody) then Exit;
+    if RName = '' then Exit;
+    if Trim(RBody) = '' then
+    begin
+      MessageDlg('Cannot paste: clipboard has no routine body',
+        mtError, [mbOK], 0);
+      Exit;
+    end;
+
+    // The header of the implementation body (first statement up to its ';').
+    HL := TStringList.Create;
+    try
+      HL.Text := RBody;
+      BodyHeader := WKJoinLineRange(HL, 0, WKHeaderEndLine(HL, 0));
+    finally
+      HL.Free;
+    end;
+    HL := TStringList.Create;
+    try
+      HL.Text := BodyHeader;
+      Params := WKNormHeaderTail(WKJoinLineRange(HL, 0, WKHeaderEndLine(HL, 0)));
+    finally
+      HL.Free;
+    end;
+
+    // Destination: a selected class node makes it a method of that class.
+    Owner := '';
+    CurPasteTV := GetCurrentTreeView;
+    if CurPasteTV <> nil then
+    begin
+      if tvoAllowMultiselect in CurPasteTV.Options then
+        CurPasteItem := CurPasteTV.GetFirstMultiSelected
+      else
+        CurPasteItem := CurPasteTV.Selected;
+      if CurPasteItem <> nil then
+      begin
+        CurPasteNodeData := TViewNodeData(CurPasteItem.Data);
+        if (CurPasteNodeData <> nil) and (CurPasteNodeData.Desc = ctnTypeDefinition) then
+        begin
+          PasteTargetNode := FindClassCTNode(CurPasteNodeData);
+          if PasteTargetNode <> nil then
+          begin
+            PasteCodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+            if PasteCodeBuffer <> nil then
+            begin
+              PasteCodeTool := nil;
+              CodeToolBoss.Explore(PasteCodeBuffer, PasteCodeTool, false);
+              if PasteCodeTool <> nil then
+                Owner := PasteCodeTool.ExtractDefinitionName(PasteTargetNode);
+            end;
+          end;
+          if Owner = '' then
+            Owner := CurPasteItem.Text;
+        end;
+      end;
+    end;
+
+    SavedCaret := Syn.CaretXY;
+    SavedTopLine := Syn.TopLine;
+    InsertedLinesAbove := 0;
+    EditorText := Syn.Text;
+
+    SL2 := TStringList.Create;
+    try
+      SL2.Text := EditorText;
+      ImplLine2 := -1;
+      FinalLine2 := -1;
+      for K := 0 to SL2.Count - 1 do
+      begin
+        T := Trim(SL2[K]);
+        if (ImplLine2 < 0) and SameText(T, 'implementation') then
+          ImplLine2 := K;
+        if SameText(T, 'end.') then
+          FinalLine2 := K;
+      end;
+      if (ImplLine2 < 0) or (FinalLine2 < 0) then Exit;
+      ImplLine2 := ImplLine2 + 1;
+      FinalLine2 := FinalLine2 + 1;
+
+      CIdx := -1;
+      CEndIdx := -1;
+      if Owner <> '' then
+      begin
+        for K := 0 to SL2.Count - 1 do
+        begin
+          if (CIdx < 0) and (Pos(Owner + ' = class', SL2[K]) > 0) then
+            CIdx := K
+          else if (CIdx >= 0) and (Trim(SL2[K]) = 'end;') then
+          begin
+            CEndIdx := K;
+            Break;
+          end;
+        end;
+        if (CIdx < 0) or (CEndIdx <= CIdx) then
+        begin
+          MessageDlg('Cannot paste: class ' + Owner + ' not found',
+            mtError, [mbOK], 0);
+          Exit;
+        end;
+      end;
+
+      // Duplicate = same owner + name + parameter list (defaults ignored).
+      if Owner <> '' then
+        Duplicate :=
+          (WKFindRoutineHeader(SL2, CIdx + 1, CEndIdx - 1, RName, Params,
+             False, False) >= 0) or
+          (WKFindRoutineHeader(SL2, ImplLine2, SL2.Count - 1,
+             Owner + '.' + RName, Params, True, True) >= 0)
+      else
+        Duplicate :=
+          (WKFindRoutineHeader(SL2, 0, ImplLine2 - 2, RName, Params,
+             True, False) >= 0) or
+          (WKFindRoutineHeader(SL2, ImplLine2, SL2.Count - 1, RName, Params,
+             True, False) >= 0);
+      if Duplicate then
+      begin
+        MessageDlg('Routine already exists', mtInformation, [mbOK], 0);
+        Exit;
+      end;
+
+      Syn.BeginUpdate;
+      try
+        if Owner <> '' then
+        begin
+          if RDecl <> '' then
+            DeclSource := RDecl
+          else
+            DeclSource := BodyHeader;
+          DeclSource := WKIndentText(WKDequalifyMemberBlock(DeclSource, Owner), 2);
+
+          // //VIS:PRIVATE becomes a private method; everything else public.
+          // A body-only copy (no declaration) is private as well.
+          if SameText(Vis, 'PRIVATE') or (RDecl = '') then
+            TargetVis := 'private'
+          else
+            TargetVis := 'public';
+
+          // Insert at the end of the matching section, or create one.
+          SectIdx := -1;
+          NextSect := CEndIdx;
+          for K := CIdx + 1 to CEndIdx - 1 do
+          begin
+            T := LowerCase(Trim(SL2[K]));
+            if (T = 'private') or (T = 'protected') or (T = 'public')
+            or (T = 'published') then
+            begin
+              if SectIdx >= 0 then
+              begin
+                NextSect := K;
+                Break;
+              end;
+              if T = TargetVis then
+                SectIdx := K;
+            end;
+          end;
+          InsLine := NextSect + 1;
+          if SectIdx < 0 then
+            DeclSource := '  ' + TargetVis + CRLF + DeclSource;
+
+          InsertAtLine(FinalLine2, WKWithTrailingBlankLine(WKQualifyRoutineHeader(RBody, Owner)));
+          InsertAtLine(InsLine, WKWithTrailingBlankLine(DeclSource));
+          Msg := 'Pasted routine ' + RName + ' into ' + Owner;
+        end
+        else if RDecl <> '' then
+        begin
+          InsertAtLine(FinalLine2, WKWithTrailingBlankLine(RBody));
+          InsertAtLine(ImplLine2, WKWithTrailingBlankLine(RDecl));
+          Msg := 'Pasted routine ' + RName;
+        end
+        else
+        begin
+          InsertAtLine(FinalLine2, WKWithTrailingBlankLine(RBody));
+          Msg := 'Pasted routine ' + RName + ' (implementation only)';
+        end;
+      finally
+        Syn.EndUpdate;
+      end;
+      Syn.CaretXY := Point(SavedCaret.X, SavedCaret.Y + InsertedLinesAbove);
+      Syn.TopLine := SavedTopLine;
+      MessageDlg(Msg, mtInformation, [mbOK], 0);
+    finally
+      SL2.Free;
+    end;
+  end;
+
 begin
   ClipText := Clipboard.AsText;
   Kind := ParseClipboardKind(ClipText);
-  if Kind = '' then
+  if (Kind = '') and (not WKIsModuleCopyText(ClipText)) then
   begin
     MessageDlg('Clipboard has no WK Code Explorer data', mtInformation, [mbOK], 0);
     Exit;
@@ -1281,6 +2085,12 @@ begin
   end;
   Syn := TSynEdit(SrcEdit.EditorControl);
   if Syn = nil then Exit;
+
+  if WKIsModuleCopyText(ClipText) then
+  begin
+    PasteStandaloneRoutine;
+    Exit;
+  end;
 
   OldName := ParseClassName(ClipText);
   if OldName = '' then
@@ -1370,18 +2180,48 @@ begin
     RoutineExists := False;
     if Kind = 'MEMBER' then
     begin
-      for I := 0 to Impls.Count - 1 do
+      if HasClass then
       begin
-        J := Pos(CRLF, Impls[I]);
-        if J > 0 then
-          Header := Trim(Copy(Impls[I], 1, J - 1))
-        else
-          Header := Trim(Impls[I]);
-        CheckHeader := RenameWholeIdentifier(Header, OldName, NewName);
-        if (CheckHeader <> '') and (Pos(CheckHeader, EditorText) > 0) then
+        // Existing class target: compare the renamed header as before.
+        for I := 0 to Impls.Count - 1 do
         begin
-          RoutineExists := True;
-          Break;
+          J := Pos(CRLF, Impls[I]);
+          if J > 0 then
+            Header := Trim(Copy(Impls[I], 1, J - 1))
+          else
+            Header := Trim(Impls[I]);
+          CheckHeader := RenameWholeIdentifier(Header, OldName, NewName);
+          if (CheckHeader <> '') and (Pos(CheckHeader, EditorText) > 0) then
+          begin
+            RoutineExists := True;
+            Break;
+          end;
+        end;
+      end
+      else
+      begin
+        // No class selected: the members become private standalone routines.
+        // Compare owner (= none) + name + parameter list, defaults ignored.
+        for I := 0 to Impls.Count - 1 do
+        begin
+          SL := TStringList.Create;
+          try
+            SL.Text := WKDequalifyMemberBlock(Impls[I], OldName);
+            Header := WKJoinLineRange(SL, 0, WKHeaderEndLine(SL, 0));
+          finally
+            SL.Free;
+          end;
+          MemberName := WKHeaderName(Header);
+          if MemberName = '' then
+            Continue;
+          if (WKFindRoutineHeader(Lines, 0, ImplSectionLine - 2, MemberName,
+               WKNormHeaderTail(Header), True, False) >= 0)
+          or (WKFindRoutineHeader(Lines, ImplSectionLine, Lines.Count - 1,
+               MemberName, WKNormHeaderTail(Header), True, False) >= 0) then
+          begin
+            RoutineExists := True;
+            Break;
+          end;
         end;
       end;
       if RoutineExists then
@@ -1397,9 +2237,20 @@ begin
       // insertion positions remain valid.
       InsertText := '';
       for I := 0 to Impls.Count - 1 do
-        InsertText := InsertText +
-          RenameWholeIdentifier(Impls[I], OldName, NewName) + CRLF;
-      InsertAtLine(FinalEndLine, InsertText);
+      begin
+        // Exactly one blank line between pasted routines, none before the
+        // first and none after the last (each block already ends with CRLF).
+        if I > 0 then
+          InsertText := InsertText + CRLF;
+        if (Kind = 'MEMBER') and (not HasClass) then
+          // No class: strip "TOld." so the body is a unit-level routine.
+          InsertText := InsertText +
+            WKDequalifyMemberBlock(Impls[I], OldName)
+        else
+          InsertText := InsertText +
+            RenameWholeIdentifier(Impls[I], OldName, NewName);
+      end;
+      InsertAtLine(FinalEndLine, WKWithTrailingBlankLine(InsertText));
 
       if Kind = 'CLASS' then
       begin
@@ -1501,7 +2352,7 @@ begin
         // Only the case with no interface "type" line adds a "type" line.
         if TypeLineIdx < 0 then
           Decl := 'type' + CRLF + CRLF + Decl;
-        InsertAtLine(ClassInsertLine, Decl + CRLF);
+        InsertAtLine(ClassInsertLine, WKWithTrailingBlankLine(Decl));
         // Add {$M+} when the copied class has a published section and the
         // target unit does not already enable published fields.
         HasPublished := False;
@@ -1527,7 +2378,7 @@ begin
               Break;
             end;
           if InterfaceLineNo > 0 then
-            InsertAtLine(InterfaceLineNo, '{$M+}' + CRLF);
+            InsertAtLine(InterfaceLineNo, WKWithTrailingBlankLine('{$M+}'));
         end;
         Msg := 'Pasted class as ' + NewName;
       end
@@ -1568,6 +2419,7 @@ begin
                   Continue;
                 MemberText := MemberText + SL[I] + CRLF;
               end;
+            MemberText := WKWithTrailingBlankLine(MemberText);
           finally
             SL.Free;
           end;
@@ -1594,10 +2446,9 @@ begin
         end
         else
         begin
-          Decl := RenameWholeIdentifier(ExtractClassDeclaration(ClipText),
-            OldName, NewName);
-          InsertAtLine(ImplSectionLine, Decl + CRLF);
-          Msg := 'Pasted member class as ' + NewName;
+          // No class selected: the implementation bodies were already added
+          // above as private unit-level routines. No class is created.
+          Msg := 'Pasted member as private routine';
         end;
       end;
     finally
@@ -1724,6 +2575,9 @@ begin
         FoundNode := FindClassCTNode(CurNode);
         if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
            (FoundNode.FirstChild.Desc in AllClasses) then
+          WKCopyMenuItem.Enabled := true
+        else if CurNode.Desc = ctnProcedure then
+          // Standalone routine (//MMWIN:MODULECOPY).
           WKCopyMenuItem.Enabled := true;
       end;
     end;
