@@ -90,7 +90,8 @@ type
     cevCodeRefreshNeeded,
     cevDirectivesRefreshNeeded,
     cevRefreshing,
-    cevCheckOnIdle // check if a refresh is needed on next idle
+    cevCheckOnIdle, // check if a refresh is needed on next idle
+    cevForceRefresh // force refresh even when the tree has focus
     );
   TWKCodeExplorerViewFlags = set of TWKCodeExplorerViewFlag;
   
@@ -157,6 +158,7 @@ type
     TreePopupmenu: TPopupMenu;
     WKCopyMenuItem: TMenuItem;
     WKPasteMenuItem: TMenuItem;
+    WKDeleteMenuItem: TMenuItem;
     procedure CodeExplorerViewCreate(Sender: TObject);
     procedure CodeExplorerViewDestroy(Sender: TObject);
     procedure CodeFilterEditChange(Sender: TObject);
@@ -180,6 +182,7 @@ type
     procedure RenameMenuItemClick(Sender: TObject);
     procedure WKCopyMenuItemClick(Sender: TObject);
     procedure WKPasteMenuItemClick(Sender: TObject);
+    procedure WKDeleteMenuItemClick(Sender: TObject);
     function FindClassCTNode(CurNode: TObject): TCodeTreeNode;
     procedure TreePopupmenuPopup(Sender: TObject);
     procedure TreeviewDblClick(Sender: TObject);
@@ -283,6 +286,7 @@ type
     procedure BeginUpdate;
     procedure EndUpdate;
     procedure CheckOnIdle;
+    procedure RequestRefreshAfterEdit;
     procedure KeyDown(var Key: Word; Shift: TShiftState); override;
     procedure Refresh(OnlyVisible: boolean);
     procedure RefreshCode(OnlyVisible: boolean);
@@ -993,7 +997,7 @@ end;
 
 procedure TWKCodeExplorerView.CodeExplorerViewCreate(Sender: TObject);
 begin
-  FMode := CodeExplorerOptions.Mode;
+  FMode := cemSource;
   UpdateMode;
 
   Name:='WKCodeExplorer';
@@ -1011,6 +1015,13 @@ begin
   WKPasteMenuItem.Caption := 'Paste';
   WKPasteMenuItem.OnClick := @WKPasteMenuItemClick;
   TreePopupmenu.Items.Insert(1, WKPasteMenuItem);
+
+  // Add Delete menu item to TreePopupmenu
+  WKDeleteMenuItem := TMenuItem.Create(Self);
+  WKDeleteMenuItem.Caption := 'Delete';
+  WKDeleteMenuItem.Enabled := false;
+  WKDeleteMenuItem.OnClick := @WKDeleteMenuItemClick;
+  TreePopupmenu.Items.Insert(2, WKDeleteMenuItem);
 
   case CodeExplorerOptions.Page of
   cepDirectives: MainNotebook.ActivePage:=DirectivesPage;
@@ -1129,9 +1140,10 @@ begin
   Exclude(FFlags,cevCheckOnIdle);
   case CurrentPage of
   cepNone: ;
-  cepCode: if (CurrentPage<>cepCode) or CodeTreeview.Focused then exit;
+  cepCode: if (not (cevForceRefresh in FFlags)) and ((CurrentPage<>cepCode) or CodeTreeview.Focused) then exit;
   cepDirectives: if (CurrentPage<>cepDirectives) or DirectivesTreeView.Focused then exit;
   end;
+  Exclude(FFlags,cevForceRefresh);
   Refresh(true);
 end;
 
@@ -1756,6 +1768,381 @@ begin
       SL.Free;
     end;
   end;
+end;
+
+procedure TWKCodeExplorerView.WKDeleteMenuItemClick(Sender: TObject);
+type
+  TDeleteRange = record
+    StartLine: Integer; // 1-based
+    EndLine: Integer;   // 1-based, inclusive
+  end;
+  TDeleteRangeArray = array of TDeleteRange;
+
+  procedure AddRange(var Ranges: TDeleteRangeArray; AStart, AEnd: Integer);
+  var
+    I, N: Integer;
+  begin
+    if (AStart < 1) or (AEnd < AStart) then Exit;
+    for I := 0 to High(Ranges) do
+      if (Ranges[I].StartLine = AStart) and (Ranges[I].EndLine = AEnd) then
+        Exit;
+    N := Length(Ranges);
+    SetLength(Ranges, N + 1);
+    Ranges[N].StartLine := AStart;
+    Ranges[N].EndLine := AEnd;
+  end;
+
+  procedure SortRangesDesc(var Ranges: TDeleteRangeArray);
+  var
+    I, J: Integer;
+    Tmp: TDeleteRange;
+  begin
+    for I := 0 to High(Ranges) - 1 do
+      for J := I + 1 to High(Ranges) do
+        if Ranges[J].StartLine > Ranges[I].StartLine then
+        begin
+          Tmp := Ranges[I];
+          Ranges[I] := Ranges[J];
+          Ranges[J] := Tmp;
+        end;
+  end;
+
+  function FindImplementationLine(ALines: TStringList): Integer;
+  var
+    I: Integer;
+  begin
+    Result := -1;
+    for I := 0 to ALines.Count - 1 do
+      if SameText(Trim(ALines[I]), 'implementation') then
+        Exit(I);
+  end;
+
+  function FindClassEndInLines(ALines: TStringList; ClassStartIdx: Integer): Integer;
+  var
+    I: Integer;
+  begin
+    Result := -1;
+    for I := ClassStartIdx + 1 to ALines.Count - 1 do
+      if SameText(Trim(ALines[I]), 'end;') then
+        Exit(I);
+  end;
+
+  // Find "<Name> = class" anywhere in the unit (interface or implementation),
+  // using whole-word boundaries around the class name and the "class" keyword.
+  // The class ends at the first "end;" with the same indentation as its start.
+  function FindClassDeclLines(ALines: TStringList; const AName: string;
+    out AStart, AEnd: Integer): Boolean;
+  var
+    I, P, NeedleLen, AfterPos, Indent: Integer;
+    S, Needle: string;
+    Found: Boolean;
+  begin
+    Result := False;
+    AStart := -1;
+    AEnd := -1;
+    if (ALines = nil) or (AName = '') then Exit;
+    Needle := AName + ' = class';
+    NeedleLen := Length(Needle);
+    Found := False;
+    for I := 0 to ALines.Count - 1 do
+    begin
+      S := ALines[I];
+      for P := 1 to Length(S) - NeedleLen + 1 do
+        if SameText(Copy(S, P, NeedleLen), Needle) then
+        begin
+          AfterPos := P + NeedleLen;
+          if ((P = 1) or (not WKIsIdentChar(S[P - 1])))
+          and ((AfterPos > Length(S)) or (not WKIsIdentChar(S[AfterPos]))) then
+          begin
+            AStart := I;
+            Found := True;
+            Break;
+          end;
+        end;
+      if Found then Break;
+    end;
+    if not Found then Exit;
+
+    Indent := WKLineIndent(ALines[AStart]);
+    for I := AStart + 1 to ALines.Count - 1 do
+      if SameText(Trim(ALines[I]), 'end;')
+      and (WKLineIndent(ALines[I]) = Indent) then
+      begin
+        AEnd := I;
+        Exit(True);
+      end;
+  end;
+
+  procedure AdjustCaretForRanges(const Ranges: TDeleteRangeArray; var Caret: TPoint);
+  var
+    I, RemovedAbove: Integer;
+  begin
+    RemovedAbove := 0;
+    for I := 0 to High(Ranges) do
+    begin
+      if Caret.Y > Ranges[I].EndLine then
+        Inc(RemovedAbove, Ranges[I].EndLine - Ranges[I].StartLine + 1)
+      else if (Caret.Y >= Ranges[I].StartLine) and (Caret.Y <= Ranges[I].EndLine) then
+      begin
+        Caret.Y := Ranges[I].StartLine;
+        Caret.X := 1;
+      end;
+    end;
+    Dec(Caret.Y, RemovedAbove);
+    if Caret.Y < 1 then Caret.Y := 1;
+  end;
+
+  function PosToLineIndex(const S: string; P: Integer): Integer;
+  var
+    i: Integer;
+  begin
+    Result := 0;
+    i := 1;
+    while (i < P) and (i <= Length(S)) do
+    begin
+      if S[i] = #10 then
+        Inc(Result)
+      else if (S[i] = #13) and ((i = Length(S)) or (S[i + 1] <> #10)) then
+        Inc(Result);
+      Inc(i);
+    end;
+  end;
+
+var
+  CurTreeView: TCustomTreeView;
+  CurItem: TTreeNode;
+  CurNode: TViewNodeData;
+  SrcEdit: TSourceEditorInterface;
+  Syn: TSynEdit;
+  CodeBuffer: TCodeBuffer;
+  ACodeTool: TCodeTool;
+  Lines: TStringList;
+  Ranges: TDeleteRangeArray;
+  ImplIdx, ClassIdx, ClassEndIdx, I, J, DeclIdx, BodyIdx, BodyEnd: Integer;
+  FoundNode, MemberNode, NodeAtPos: TCodeTreeNode;
+  AClassName, MemberName, OwnerName, Header, Params: string;
+  SavedCaret: TPoint;
+  P1, P2: TPoint;
+  SelLine: Integer;
+  IsImplNode: Boolean;
+  S, T: string;
+begin
+  if MessageDlg('Delete the selected item?', mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+    Exit;
+
+  CurTreeView := GetCurrentTreeView;
+  if CurTreeView = nil then Exit;
+  if tvoAllowMultiselect in CurTreeView.Options then
+    CurItem := CurTreeView.GetFirstMultiSelected
+  else
+    CurItem := CurTreeView.Selected;
+  if CurItem = nil then Exit;
+  CurNode := TViewNodeData(CurItem.Data);
+  if CurNode = nil then Exit;
+
+  SrcEdit := SourceEditorManagerIntf.ActiveEditor;
+  if SrcEdit = nil then Exit;
+  if not (SrcEdit.EditorControl is TSynEdit) then Exit;
+  Syn := TSynEdit(SrcEdit.EditorControl);
+
+  CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+  if CodeBuffer = nil then Exit;
+  ACodeTool := nil;
+  CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
+  if ACodeTool = nil then Exit;
+
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Syn.Text;
+    ImplIdx := FindImplementationLine(Lines);
+    if ImplIdx < 0 then Exit;
+
+    SavedCaret := Syn.CaretXY;
+    SelLine := PosToLineIndex(CodeBuffer.Source, CurNode.StartPos);
+    IsImplNode := SelLine >= ImplIdx;
+
+    SetLength(Ranges, 0);
+
+    if CurNode.Desc = ctnTypeDefinition then
+    begin
+      // Delete class: declaration (keep leading "{ Name }" comment) + all method bodies.
+      FoundNode := FindClassCTNode(CurNode);
+      if FoundNode = nil then Exit;
+      AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
+      if AClassName = '' then Exit;
+
+      if not FindClassDeclLines(Lines, AClassName, ClassIdx, ClassEndIdx) then Exit;
+
+      // Collect method bodies for methods declared in this class.
+      for I := ClassIdx + 1 to ClassEndIdx - 1 do
+      begin
+        S := Lines[I];
+        if WKRoutineKeywordLenAt(S, WKLineIndent(S) + 1) = 0 then Continue;
+        J := WKHeaderEndLine(Lines, I);
+        Header := WKJoinLineRange(Lines, I, J);
+        MemberName := WKHeaderName(Header);
+        if MemberName = '' then Continue;
+        Params := WKNormHeaderTail(Header);
+        BodyIdx := WKFindRoutineHeader(Lines, ImplIdx + 1, Lines.Count - 1,
+          AClassName + '.' + MemberName, Params, True, True);
+        if BodyIdx >= 0 then
+        begin
+          BodyEnd := WKFindRoutineEndLine(Lines, BodyIdx);
+          if BodyEnd >= 0 then
+            AddRange(Ranges, BodyIdx + 1, BodyEnd + 1);
+        end;
+      end;
+
+      AddRange(Ranges, ClassIdx + 1, ClassEndIdx + 1); // keep comment above class
+    end
+    else if CurNode.Desc in [ctnProcedure, ctnProperty, ctnVarDefinition, ctnConstDefinition] then
+    begin
+      FoundNode := FindClassCTNode(CurNode);
+      if (FoundNode <> nil) and (FoundNode.FirstChild <> nil)
+      and (FoundNode.FirstChild.Desc in AllClasses) then
+      begin
+        // Class member.
+        AClassName := ACodeTool.ExtractDefinitionName(FoundNode);
+        if AClassName = '' then Exit;
+
+        if CurNode.Desc <> ctnProcedure then
+        begin
+          // Properties/class vars: delete only the line.
+          AddRange(Ranges, SelLine + 1, SelLine + 1);
+        end
+        else
+        begin
+          Header := WKJoinLineRange(Lines, SelLine, WKHeaderEndLine(Lines, SelLine));
+          MemberName := WKHeaderName(Header);
+          if Pos('.', MemberName) > 0 then
+            MemberName := Copy(MemberName, LastDelimiter('.', MemberName) + 1, MaxInt);
+          Params := WKNormHeaderTail(Header);
+
+          if IsImplNode then
+          begin
+            // Delete body and matching declaration in class.
+            BodyEnd := WKFindRoutineEndLine(Lines, SelLine);
+            if BodyEnd < 0 then Exit;
+            AddRange(Ranges, SelLine + 1, BodyEnd + 1);
+            if FindClassDeclLines(Lines, AClassName, ClassIdx, ClassEndIdx) then
+            begin
+              DeclIdx := WKFindRoutineHeader(Lines, ClassIdx + 1, ClassEndIdx - 1,
+                MemberName, Params, False, False);
+              if DeclIdx >= 0 then
+                AddRange(Ranges, DeclIdx + 1, WKHeaderEndLine(Lines, DeclIdx) + 1);
+            end;
+          end
+          else
+          begin
+            // Delete declaration and matching body in implementation.
+            AddRange(Ranges, SelLine + 1, WKHeaderEndLine(Lines, SelLine) + 1);
+            BodyIdx := WKFindRoutineHeader(Lines, ImplIdx + 1, Lines.Count - 1,
+              AClassName + '.' + MemberName, Params, True, True);
+            if BodyIdx >= 0 then
+            begin
+              BodyEnd := WKFindRoutineEndLine(Lines, BodyIdx);
+              if BodyEnd >= 0 then
+                AddRange(Ranges, BodyIdx + 1, BodyEnd + 1);
+            end;
+          end;
+        end;
+      end
+      else
+      begin
+        // Standalone routine, module variable or module constant.
+        if CurNode.Desc = ctnProperty then Exit; // no module-level property
+        if CurNode.Desc = ctnProcedure then
+        begin
+          if Pos('.', CurNode.Path) > 0 then Exit; // nested routine
+        end
+        else
+        begin
+          // Ignore variables/constants nested inside a routine.
+          NodeAtPos := ACodeTool.FindDeepestNodeAtPos(CurNode.StartPos, False);
+          while NodeAtPos <> nil do
+          begin
+            if NodeAtPos.Desc in [ctnProcedure, ctnTypeDefinition,
+              ctnGenericType] then Exit;
+            NodeAtPos := NodeAtPos.Parent;
+          end;
+        end;
+
+        if CurNode.Desc in [ctnVarDefinition, ctnConstDefinition] then
+        begin
+          // Module variable/constant: delete only the line.
+          AddRange(Ranges, SelLine + 1, SelLine + 1);
+        end
+        else
+        begin
+          Header := WKJoinLineRange(Lines, SelLine, WKHeaderEndLine(Lines, SelLine));
+          MemberName := WKHeaderName(Header);
+          if MemberName = '' then Exit;
+          Params := WKNormHeaderTail(Header);
+
+          if IsImplNode then
+          begin
+            // Implementation body: delete it, and the interface declaration
+            // too when the routine is public.
+            BodyEnd := WKFindRoutineEndLine(Lines, SelLine);
+            if BodyEnd < 0 then Exit;
+            AddRange(Ranges, SelLine + 1, BodyEnd + 1);
+            DeclIdx := WKFindRoutineHeader(Lines, 0, ImplIdx - 1,
+              MemberName, Params, True, False);
+            if DeclIdx >= 0 then
+              AddRange(Ranges, DeclIdx + 1, WKHeaderEndLine(Lines, DeclIdx) + 1);
+          end
+          else
+          begin
+            // Public routine: delete declaration and implementation body.
+            AddRange(Ranges, SelLine + 1, WKHeaderEndLine(Lines, SelLine) + 1);
+            BodyIdx := WKFindRoutineHeader(Lines, ImplIdx + 1, Lines.Count - 1,
+              MemberName, Params, True, False);
+            if BodyIdx >= 0 then
+            begin
+              BodyEnd := WKFindRoutineEndLine(Lines, BodyIdx);
+              if BodyEnd >= 0 then
+                AddRange(Ranges, BodyIdx + 1, BodyEnd + 1);
+            end;
+          end;
+        end;
+      end;
+    end
+    else
+      Exit;
+
+    if Length(Ranges) = 0 then Exit;
+
+    SortRangesDesc(Ranges);
+    // Adjust caret before applying bottom-up deletions.
+    SavedCaret := Syn.CaretXY;
+    AdjustCaretForRanges(Ranges, SavedCaret);
+
+    Syn.BeginUpdate;
+    try
+      for I := 0 to High(Ranges) do
+      begin
+        P1 := Point(1, Ranges[I].StartLine);
+        if Ranges[I].EndLine < Syn.Lines.Count then
+          P2 := Point(1, Ranges[I].EndLine + 1)
+        else
+          P2 := Point(Length(Syn.Lines[Ranges[I].EndLine - 1]) + 1, Ranges[I].EndLine);
+        Syn.CaretXY := P1;
+        Syn.BlockBegin := P1;
+        Syn.BlockEnd := P2;
+        Syn.SelText := '';
+      end;
+    finally
+      Syn.EndUpdate;
+    end;
+
+    if SavedCaret.Y > Syn.Lines.Count then
+      SavedCaret.Y := Syn.Lines.Count;
+    if SavedCaret.Y < 1 then SavedCaret.Y := 1;
+    Syn.CaretXY := SavedCaret;
+  finally
+    Lines.Free;
+  end;
+  RequestRefreshAfterEdit;
 end;
 
 procedure TWKCodeExplorerView.WKPasteMenuItemClick(Sender: TObject);
@@ -2461,6 +2848,7 @@ begin
     Impls.Free;
     Lines.Free;
   end;
+  RequestRefreshAfterEdit;
 end;
 
 procedure TWKCodeExplorerView.CloseIDEHandler(Sender: TObject);
@@ -2531,6 +2919,8 @@ var
   CurNode: TViewNodeData;
   HasImplementation: Boolean;
   FoundNode: TCodeTreeNode;
+  Ancestor: TTreeNode;
+  HasBlockingAncestor: Boolean;
 begin
   CanRename:=false;
   HasImplementation:=false;
@@ -2561,6 +2951,7 @@ begin
   WKCEJumpToImplementationIDEMenuCommand.Visible:=HasImplementation;
   // Enable Copy for class nodes and for member nodes (procedure/property)
   WKCopyMenuItem.Enabled := false;
+  WKDeleteMenuItem.Enabled := false;
   if CurItem <> nil then begin
     CurNode := TViewNodeData(CurItem.Data);
     if CurNode <> nil then begin
@@ -2568,17 +2959,55 @@ begin
         FoundNode := FindClassCTNode(CurNode);
         if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
            (FoundNode.FirstChild.Desc in AllClasses) then
+        begin
           WKCopyMenuItem.Enabled := true;
+          WKDeleteMenuItem.Enabled := true;
+        end;
       end
       else if CurNode.Desc in [ctnProcedure, ctnProperty] then
       begin
         FoundNode := FindClassCTNode(CurNode);
         if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
            (FoundNode.FirstChild.Desc in AllClasses) then
-          WKCopyMenuItem.Enabled := true
+        begin
+          WKCopyMenuItem.Enabled := true;
+          WKDeleteMenuItem.Enabled := true;
+        end
         else if CurNode.Desc = ctnProcedure then
+        begin
           // Standalone routine (//MMWIN:MODULECOPY).
           WKCopyMenuItem.Enabled := true;
+          // Nested routines are out of scope (their path is dotted).
+          if Pos('.', CurNode.Path) = 0 then
+            WKDeleteMenuItem.Enabled := true;
+        end;
+      end
+      else if CurNode.Desc in [ctnVarDefinition, ctnConstDefinition] then
+      begin
+        FoundNode := FindClassCTNode(CurNode);
+        if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+           (FoundNode.FirstChild.Desc in AllClasses) then
+          // Class variable/const: delete only the line.
+          WKDeleteMenuItem.Enabled := true
+        else
+        begin
+          // Module variable/constant: only when not nested in a routine/type.
+          HasBlockingAncestor := false;
+          Ancestor := CurItem.Parent;
+          while Ancestor <> nil do
+          begin
+            if (TViewNodeData(Ancestor.Data) <> nil) and
+               (TViewNodeData(Ancestor.Data).Desc in
+                 [ctnProcedure, ctnTypeDefinition, ctnGenericType]) then
+            begin
+              HasBlockingAncestor := true;
+              Break;
+            end;
+            Ancestor := Ancestor.Parent;
+          end;
+          if not HasBlockingAncestor then
+            WKDeleteMenuItem.Enabled := true;
+        end;
       end;
     end;
   end;
@@ -3956,6 +4385,12 @@ begin
   Include(FFlags,cevCheckOnIdle);
 end;
 
+procedure TWKCodeExplorerView.RequestRefreshAfterEdit;
+begin
+  Include(FFlags,cevForceRefresh);
+  CheckOnIdle;
+end;
+
 procedure TWKCodeExplorerView.Refresh(OnlyVisible: boolean);
 begin
   Exclude(FFlags,cevCheckOnIdle);
@@ -4174,16 +4609,15 @@ begin
 
       DeleteDuplicates(ACodeTool);
 
-      // restore old expanded state
-      if not CurFollowNode then
-        AutoExpandNodes;
-
       BuildCodeSortedForStartPos;
       // clear references to the TCodeTreeNode to avoid dangling pointers
       ClearCTNodes(CodeTreeview);
 
       ApplyCodeFilter;
 
+      // restore old expanded state: auto-expand baseline, then saved state wins
+      if not CurFollowNode then
+        AutoExpandNodes;
       if OldExpanded<>nil then
         OldExpanded.Apply(CodeTreeView,false);
 
