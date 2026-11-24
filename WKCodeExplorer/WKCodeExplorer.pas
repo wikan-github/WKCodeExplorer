@@ -40,11 +40,11 @@ interface
 
 uses
   // RTL+FCL
-  Classes, SysUtils, Types, AVL_Tree,
+  Classes, SysUtils, Types, Math, AVL_Tree,
   // LazUtils
   LazUtilities, LazStringUtils, LazLoggerBase, LazTracer,
   // LCL
-  LCLType, LMessages, Forms, Controls, Dialogs, Buttons, ComCtrls, Menus, ExtCtrls, EditBtn, Clipbrd,
+  LCLType, LMessages, Forms, Controls, Dialogs, Buttons, ComCtrls, Menus, StdCtrls, ExtCtrls, EditBtn, Clipbrd,
   // SynEdit
   SynEdit,
   // CodeTools
@@ -343,6 +343,9 @@ function GetToDoComment(const Src: string;
 implementation
 
 {$R *.lfm}
+
+var
+  WKAddLocalVariableCmd: TIDECommand = nil;
 
 { Helpers for standalone-routine copy/paste (//MMWIN:MODULECOPY). }
 
@@ -5316,7 +5319,370 @@ begin
       [ofOnlyIfExists, ofRegularFile]);
 end;
 
+{ Add local variable (Ctrl+L) helpers. }
+
+function WKIsValidPascalIdent(const S: string): Boolean;
+begin
+  Result := (S <> '') and IsValidIdent(S);
+end;
+
+function WKFindRoutineBodyBounds(Lines: TStrings; CaretRow: Integer;
+  out BeginLine, EndLine, HeaderLine: Integer): Boolean;
+var
+  I, J, Indent: Integer;
+  S: string;
+begin
+  Result := False;
+  BeginLine := -1;
+  EndLine := -1;
+  HeaderLine := -1;
+  if (Lines = nil) or (CaretRow < 0) or (CaretRow >= Lines.Count) then Exit;
+
+  // Find the enclosing routine by scope: walk up from the caret. The first
+  // header whose matching 'end;' (same indentation) lies below the caret
+  // is the innermost routine containing the caret.
+  for I := CaretRow downto 0 do
+  begin
+    S := Trim(Lines[I]);
+    if (Pos('procedure ', LowerCase(S)) = 1) or
+       (Pos('function ', LowerCase(S)) = 1) or
+       (Pos('constructor ', LowerCase(S)) = 1) or
+       (Pos('destructor ', LowerCase(S)) = 1) or
+       (Pos('operator ', LowerCase(S)) = 1) then
+    begin
+      Indent := WKLineIndent(Lines[I]);
+      // find matching end
+      for J := I + 1 to Lines.Count - 1 do
+      begin
+        if SameText(Trim(Lines[J]), 'end;') and (WKLineIndent(Lines[J]) = Indent) then
+        begin
+          if J > CaretRow then
+          begin
+            HeaderLine := I;
+            EndLine := J;
+          end;
+          Break;
+        end;
+      end;
+      if HeaderLine >= 0 then Break;
+    end;
+  end;
+  if HeaderLine < 0 then Exit;
+
+  Indent := WKLineIndent(Lines[HeaderLine]);
+  // find the routine's begin: first 'begin' at the header's indentation
+  for I := HeaderLine + 1 to EndLine - 1 do
+  begin
+    if SameText(Trim(Lines[I]), 'begin') and (WKLineIndent(Lines[I]) = Indent) then
+    begin
+      BeginLine := I;
+      Break;
+    end;
+  end;
+  if BeginLine < 0 then Exit;
+
+  // Caret must be strictly inside the body.
+  if not ((CaretRow > BeginLine) and (CaretRow < EndLine)) then Exit;
+
+  Result := True;
+end;
+
+function WKIsAlreadyDeclared(Lines: TStrings; CaretRow, BeginLine, HeaderLine: Integer;
+  const Name: string): Boolean;
+var
+  I: Integer;
+  S, Lower: string;
+  InVarSection: Boolean;
+begin
+  Result := False;
+  // Routine parameters: scan the header line for Name as a word.
+  if HeaderLine >= 0 then
+  begin
+    S := Lines[HeaderLine];
+    if Pos('(', S) > 0 then
+    begin
+      // simple whole-word check in the header
+      if Pos(' ' + Name + ' ', ' ' + S + ' ') > 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+      if Pos(' ' + Name + ':', ' ' + S) > 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+
+  // Local var/const section inside the routine: lines between header and begin.
+  InVarSection := False;
+  for I := HeaderLine + 1 to BeginLine - 1 do
+  begin
+    S := Trim(Lines[I]);
+    Lower := LowerCase(S);
+    if Lower = 'var' then
+    begin
+      InVarSection := True;
+      Continue;
+    end;
+    if Lower = 'const' then
+    begin
+      InVarSection := True;
+      Continue;
+    end;
+    if Lower = 'begin' then
+    begin
+      InVarSection := False;
+      Continue;
+    end;
+    if InVarSection and (S <> '') then
+    begin
+      if (Pos(Name + ' ', S) = 1) or (Pos(Name + ':', S) = 1) or
+         (Pos(Name + '=', S) = 1) then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+
+  // Unit-level identifiers: any declaration line at indent 0 containing Name.
+  for I := 0 to Lines.Count - 1 do
+  begin
+    S := Lines[I];
+    if (WKLineIndent(S) = 0) then
+    begin
+      Lower := LowerCase(Trim(S));
+      if (Pos('procedure ' + LowerCase(Name), Lower) > 0) or
+         (Pos('function ' + LowerCase(Name), Lower) > 0) or
+         (Pos('var', Lower) = 1) or (Pos('const', Lower) = 1) or
+         (Pos('type', Lower) = 1) then
+      begin
+        // check Name appears as a word in that declaration block
+        if Pos(' ' + Name + ' ', ' ' + S + ' ') > 0 then
+        begin
+          Result := True;
+          Exit;
+        end;
+      end;
+    end;
+  end;
+end;
+
+function WKPromptAddLocalVariable(var AName, AType: string): Boolean;
+var
+  Form: TForm;
+  LblName, LblType, LblKind: TLabel;
+  EdName, EdType: TEdit;
+  CbKind: TComboBox;
+  BtnOK, BtnCancel: TButton;
+begin
+  Result := False;
+  Form := TForm.Create(nil);
+  try
+    Form.Caption := 'Add local variable';
+    Form.BorderStyle := bsDialog;
+    Form.Position := poScreenCenter;
+    Form.Width := 360;
+    Form.Height := 200;
+
+    LblName := TLabel.Create(Form);
+    LblName.Parent := Form;
+    LblName.Caption := 'Name:';
+    LblName.Left := 12;
+    LblName.Top := 16;
+
+    EdName := TEdit.Create(Form);
+    EdName.Parent := Form;
+    EdName.Left := 12;
+    EdName.Top := 34;
+    EdName.Width := 320;
+    EdName.Text := AName;
+
+    LblType := TLabel.Create(Form);
+    LblType.Parent := Form;
+    LblType.Caption := 'Type name:';
+    LblType.Left := 12;
+    LblType.Top := 66;
+
+    EdType := TEdit.Create(Form);
+    EdType.Parent := Form;
+    EdType.Left := 12;
+    EdType.Top := 84;
+    EdType.Width := 320;
+    EdType.Text := AType;
+
+    LblKind := TLabel.Create(Form);
+    LblKind.Parent := Form;
+    LblKind.Caption := 'Local var';
+    LblKind.Left := 12;
+    LblKind.Top := 116;
+
+    CbKind := TComboBox.Create(Form);
+    CbKind.Parent := Form;
+    CbKind.Left := 12;
+    CbKind.Top := 134;
+    CbKind.Width := 120;
+    CbKind.Items.Add('Local var');
+    CbKind.ItemIndex := 0;
+    CbKind.Enabled := False;
+
+    BtnOK := TButton.Create(Form);
+    BtnOK.Parent := Form;
+    BtnOK.Caption := 'OK';
+    BtnOK.Default := True;
+    BtnOK.ModalResult := mrOK;
+    BtnOK.Left := 180;
+    BtnOK.Top := 132;
+
+    BtnCancel := TButton.Create(Form);
+    BtnCancel.Parent := Form;
+    BtnCancel.Caption := 'Cancel';
+    BtnCancel.Cancel := True;
+    BtnCancel.ModalResult := mrCancel;
+    BtnCancel.Left := 268;
+    BtnCancel.Top := 132;
+
+    if Form.ShowModal = mrOK then
+    begin
+      AName := Trim(EdName.Text);
+      AType := Trim(EdType.Text);
+      if AType = '' then AType := 'Integer';
+      Result := True;
+    end;
+  finally
+    Form.Free;
+  end;
+end;
+
+procedure WKAddLocalVariableExecute(Sender: TObject);
+var
+  SrcEdit: TSourceEditorInterface;
+  Syn: TSynEdit;
+  Caret: TPoint;
+  Name: string;
+  AType: string;
+  BeginLine, EndLine: Integer;
+  HasVarSection: Boolean;
+  VarLine: Integer;
+  I: Integer;
+  HeaderLine: Integer;
+  StartScan: Integer;
+  BeginIndent: Integer;
+  IndentI: Integer;
+  S: string;
+  Inserted: Integer;
+  SavedCaretX, SavedCaretY: Integer;
+  Lines: TStrings;
+begin
+  if SourceEditorManagerIntf = nil then Exit;
+  SrcEdit := SourceEditorManagerIntf.ActiveEditor;
+  if SrcEdit = nil then Exit;
+  if not (SrcEdit.EditorControl is TSynEdit) then Exit;
+  Syn := TSynEdit(SrcEdit.EditorControl);
+
+  Caret := Syn.CaretXY;
+  if Caret.Y < 1 then Exit;
+  Name := Trim(Syn.GetWordAtRowCol(Caret));
+  if Name = '' then Exit;
+
+  Lines := Syn.Lines;
+  if not WKFindRoutineBodyBounds(Lines, Caret.Y - 1, BeginLine, EndLine, HeaderLine) then Exit;
+
+  // Already declared?
+  if WKIsAlreadyDeclared(Lines, Caret.Y - 1, BeginLine, HeaderLine, Name) then
+  begin
+    if MessageDlg('Variable already exists: ' + Name + '. Declare again?',
+       mtConfirmation, [mbOK, mbCancel], 0) <> mrOK then
+      Exit;
+  end;
+
+  AType := 'Integer';
+  if not WKPromptAddLocalVariable(Name, AType) then Exit;
+
+  if Name = '' then Exit;
+
+  // Name validation
+  if not WKIsValidPascalIdent(Name) then
+  begin
+    if MessageDlg('Variable name list does not seem to be valid: ' + Name +
+       '  Accept anyway?', mtConfirmation, [mbOK, mbCancel], 0) <> mrOK then
+      Exit;
+  end;
+
+  // Find var section: only between the routine header and begin, so a
+  // unit/class-level 'var' above the routine is not mistaken for it.
+  HasVarSection := False;
+  VarLine := -1;
+  BeginIndent := WKLineIndent(Lines[BeginLine]);
+  HeaderLine := -1;
+  I := BeginLine - 1;
+  while I >= 0 do
+  begin
+    S := Trim(Lines[I]);
+    if S <> '' then
+    begin
+      IndentI := WKLineIndent(Lines[I]);
+      // only consider lines at the same indentation as begin (ignore
+      // nested routines, which are indented deeper)
+      if IndentI = BeginIndent then
+      begin
+        if (Pos('procedure ', LowerCase(S)) = 1) or
+           (Pos('function ', LowerCase(S)) = 1) or
+           (Pos('constructor ', LowerCase(S)) = 1) or
+           (Pos('destructor ', LowerCase(S)) = 1) or
+           (Pos('operator ', LowerCase(S)) = 1) then
+        begin
+          HeaderLine := I;
+          Break;
+        end;
+        if SameText(S, 'begin') or SameText(S, 'end;') then Break;
+      end;
+    end;
+    Dec(I);
+  end;
+  StartScan := HeaderLine + 1;
+  if StartScan < 0 then StartScan := 0;
+  for I := StartScan to BeginLine - 1 do
+  begin
+    if (WKLineIndent(Lines[I]) = BeginIndent) and
+       SameText(Trim(Lines[I]), 'var') then
+    begin
+      HasVarSection := True;
+      VarLine := I;
+    end;
+  end;
+
+  SavedCaretX := Caret.X;
+  SavedCaretY := Caret.Y;
+  Inserted := 0;
+
+  Syn.BeginUpdate;
+  try
+    if HasVarSection then
+    begin
+      // Insert directly after the "var" line. Always use BeginIndent + 2;
+      // do not copy existing declaration indentation (IDE formatter changes it).
+      Lines.Insert(VarLine + 1, StringOfChar(' ', BeginIndent + 2) + Name + ': ' + AType + ';');
+      Inserted := 1;
+    end
+    else
+    begin
+      Lines.Insert(BeginLine, StringOfChar(' ', BeginIndent) + 'var');
+      Lines.Insert(BeginLine + 1, StringOfChar(' ', BeginIndent + 2) + Name + ': ' + AType + ';');
+      Inserted := 2;
+    end;
+  finally
+    Syn.EndUpdate;
+  end;
+
+  Syn.CaretXY := Point(SavedCaretX, SavedCaretY + Inserted);
+end;
+
 procedure Register;
+var
+  Cat: TIDECommandCategory;
 begin
   RegisterStandardWKCodeExplorerMenuItems;
   if IDEWindowCreators <> nil then
@@ -5326,6 +5692,13 @@ begin
   if itmViewMainWindows <> nil then
     RegisterIDEMenuCommand(itmViewMainWindows, 'WKViewCodeExplorer',
       'WK Code Explorer', nil, @ShowWKCodeExplorer);
+
+  // Add local variable (Ctrl+L) in the source editor.
+  Cat := IDECommandList.FindCategoryByName(CommandCategoryTextEditingName);
+  if Cat <> nil then
+    WKAddLocalVariableCmd := RegisterIDECommand(Cat, 'WKAddLocalVariable',
+      'Add local variable', IDEShortCut(VK_L, [ssCtrl], VK_UNKNOWN, []),
+      nil, @WKAddLocalVariableExecute);
 end;
 
 initialization
