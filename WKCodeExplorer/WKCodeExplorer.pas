@@ -55,7 +55,7 @@ uses
   LazIDEIntf, IDECommands, MenuIntf, SrcEditorIntf, IDEDialogs, IDEImagesIntf,
   IDEWindowIntf,
   // Local plain settings class (no IDE-internal units)
-  WKCodeExplOpts, WKCopyFormat, WKPasteFormat;
+  WKCodeExplOpts, WKCopyFormat, WKPasteFormat, WKAddLocalVariableForm;
 
 const
   { Local copies of the IDE-only string constants.  Values are taken from
@@ -5470,89 +5470,157 @@ begin
   end;
 end;
 
-function WKPromptAddLocalVariable(var AName, AType: string): Boolean;
+function WKStripTypeKeyword(const S: string): string;
 var
-  Form: TForm;
-  LblName, LblType, LblKind: TLabel;
-  EdName, EdType: TEdit;
-  CbKind: TComboBox;
-  BtnOK, BtnCancel: TButton;
+  T: string;
+begin
+  T := Trim(S);
+  if (Length(T) > 4) and SameText(Copy(T, 1, 4), 'type') and (T[5] in [' ', #9]) then
+    Delete(T, 1, 4);
+  Result := Trim(T);
+end;
+
+procedure WKCollectUnitTypes(Lines: TStrings; OutList: TStrings);
+var
+  I, P: Integer;
+  S, TrimS, Name: string;
+  InType, InClass: Boolean;
+  Section: string; // 'interface', 'implementation', ''
+begin
+  if (Lines = nil) or (OutList = nil) then Exit;
+  InType := False;
+  InClass := False;
+  Section := '';
+  for I := 0 to Lines.Count - 1 do
+  begin
+    S := Lines[I];
+    TrimS := Trim(S);
+    if TrimS = '' then Continue;
+
+    // Track interface/implementation sections
+    if SameText(TrimS, 'interface') then begin Section := 'interface'; InType := False; InClass := False; Continue; end;
+    if SameText(TrimS, 'implementation') then begin Section := 'implementation'; InType := False; InClass := False; Continue; end;
+    if SameText(TrimS, 'initialization') or SameText(TrimS, 'finalization') then begin InType := False; InClass := False; Continue; end;
+
+    if Section = '' then Continue;
+
+    // Detect class/record start to skip member declarations
+    // Simple heuristic: " = class", " = record", " = object", " = interface"
+    if (Pos('= class', LowerCase(TrimS)) > 0) or
+       (Pos('= record', LowerCase(TrimS)) > 0) or
+       (Pos('= object', LowerCase(TrimS)) > 0) or
+       ((Pos('= interface', LowerCase(TrimS)) > 0) and (Pos('=', TrimS) > 0)) then
+    begin
+      // this is a type declaration line - record the name below, also enter class
+      // but first handle the name extraction
+    end;
+
+    // Leave class at "end;"
+    if InClass and (SameText(TrimS, 'end;') or SameText(TrimS, 'end')) then
+    begin
+      InClass := False;
+      InType := True;
+      Continue;
+    end;
+
+    // Type section toggle
+    if SameText(TrimS, 'type') then begin InType := True; Continue; end;
+    if InType and not InClass and (SameText(TrimS, 'var') or SameText(TrimS, 'const') or
+       SameText(TrimS, 'resourcestring') or SameText(TrimS, 'threadvar') or
+       SameText(TrimS, 'begin') or
+       (Pos('procedure ', LowerCase(TrimS)) = 1) or
+       (Pos('function ', LowerCase(TrimS)) = 1) or
+       (Pos('constructor ', LowerCase(TrimS)) = 1) or
+       (Pos('destructor ', LowerCase(TrimS)) = 1)) then
+    begin
+      InType := False;
+      // do not continue; line might be relevant, but for type collection we can skip
+    end;
+
+    if not InType then Continue;
+    if InClass then Continue;
+    // Skip indented lines that look like class members (simple guard)
+    if (Length(S) > 0) and (S[1] = ' ') and (Pos('=', TrimS) = 0) then Continue;
+
+    // Look for "Name ="
+    P := Pos('=', TrimS);
+    if P <= 1 then Continue;
+    Name := Trim(Copy(TrimS, 1, P - 1));
+    Name := WKStripTypeKeyword(Name);
+    // remove generic params or trailing spaces
+    if Pos('<', Name) > 0 then Name := Trim(Copy(Name, 1, Pos('<', Name) - 1));
+    if Name = '' then Continue;
+    // basic identifier check
+    if not (Name[1] in ['A'..'Z','a'..'z','_']) then Continue;
+
+    if OutList.IndexOf(Name) < 0 then
+      OutList.Add(Name);
+
+    // enter class/record/interface body to skip members. A forward/alias
+    // declaration ending with ';' has no body to skip.
+    if (Pos(';', TrimS) = 0) and
+       (((LowerCase(TrimS) = LowerCase(Name) + ' = class') or
+         (Pos(LowerCase(Name) + ' = class(', LowerCase(TrimS)) = 1) or
+         (Pos(LowerCase(Name) + ' = class ', LowerCase(TrimS)) = 1)) or
+        (Pos(LowerCase(Name) + ' = record', LowerCase(TrimS)) = 1) or
+        (Pos(LowerCase(Name) + ' = object', LowerCase(TrimS)) = 1) or
+        (Pos(LowerCase(Name) + ' = interface', LowerCase(TrimS)) = 1)) then
+      InClass := True;
+  end;
+end;
+
+procedure WKCollectLocalTypes(Lines: TStrings; HeaderLine, BeginLine: Integer; OutList: TStrings);
+var
+  I, P: Integer;
+  S, TrimS, Name: string;
+  InType: Boolean;
+begin
+  if (Lines = nil) or (OutList = nil) then Exit;
+  if (HeaderLine < 0) or (BeginLine < 0) then Exit;
+  InType := False;
+  for I := HeaderLine + 1 to BeginLine - 1 do
+  begin
+    if (I < 0) or (I >= Lines.Count) then Continue;
+    S := Lines[I];
+    TrimS := Trim(S);
+    if TrimS = '' then Continue;
+    if SameText(TrimS, 'type') then begin InType := True; Continue; end;
+    if SameText(TrimS, 'var') or SameText(TrimS, 'const') or
+       SameText(TrimS, 'begin') or
+       (Pos('procedure ', LowerCase(TrimS)) = 1) or
+       (Pos('function ', LowerCase(TrimS)) = 1) then
+    begin
+      InType := False;
+      Continue;
+    end;
+    if not InType then Continue;
+    P := Pos('=', TrimS);
+    if P <= 1 then Continue;
+    Name := Trim(Copy(TrimS, 1, P - 1));
+    Name := WKStripTypeKeyword(Name);
+    if Pos('<', Name) > 0 then Name := Trim(Copy(Name, 1, Pos('<', Name) - 1));
+    if Name = '' then Continue;
+    if not (Name[1] in ['A'..'Z','a'..'z','_']) then Continue;
+    if OutList.IndexOf(Name) < 0 then
+      OutList.Add(Name);
+  end;
+end;
+
+function WKPromptAddLocalVariable(Lines: TStrings; HeaderLine, BeginLine: Integer;
+  var AName, AType: string): Boolean;
+var
+  UnitTypes, LocalTypes: TStringList;
 begin
   Result := False;
-  Form := TForm.Create(nil);
+  UnitTypes := TStringList.Create;
+  LocalTypes := TStringList.Create;
   try
-    Form.Caption := 'Add local variable';
-    Form.BorderStyle := bsDialog;
-    Form.Position := poScreenCenter;
-    Form.Width := 360;
-    Form.Height := 200;
-
-    LblName := TLabel.Create(Form);
-    LblName.Parent := Form;
-    LblName.Caption := 'Name:';
-    LblName.Left := 12;
-    LblName.Top := 16;
-
-    EdName := TEdit.Create(Form);
-    EdName.Parent := Form;
-    EdName.Left := 12;
-    EdName.Top := 34;
-    EdName.Width := 320;
-    EdName.Text := AName;
-
-    LblType := TLabel.Create(Form);
-    LblType.Parent := Form;
-    LblType.Caption := 'Type name:';
-    LblType.Left := 12;
-    LblType.Top := 66;
-
-    EdType := TEdit.Create(Form);
-    EdType.Parent := Form;
-    EdType.Left := 12;
-    EdType.Top := 84;
-    EdType.Width := 320;
-    EdType.Text := AType;
-
-    LblKind := TLabel.Create(Form);
-    LblKind.Parent := Form;
-    LblKind.Caption := 'Local var';
-    LblKind.Left := 12;
-    LblKind.Top := 116;
-
-    CbKind := TComboBox.Create(Form);
-    CbKind.Parent := Form;
-    CbKind.Left := 12;
-    CbKind.Top := 134;
-    CbKind.Width := 120;
-    CbKind.Items.Add('Local var');
-    CbKind.ItemIndex := 0;
-    CbKind.Enabled := False;
-
-    BtnOK := TButton.Create(Form);
-    BtnOK.Parent := Form;
-    BtnOK.Caption := 'OK';
-    BtnOK.Default := True;
-    BtnOK.ModalResult := mrOK;
-    BtnOK.Left := 180;
-    BtnOK.Top := 132;
-
-    BtnCancel := TButton.Create(Form);
-    BtnCancel.Parent := Form;
-    BtnCancel.Caption := 'Cancel';
-    BtnCancel.Cancel := True;
-    BtnCancel.ModalResult := mrCancel;
-    BtnCancel.Left := 268;
-    BtnCancel.Top := 132;
-
-    if Form.ShowModal = mrOK then
-    begin
-      AName := Trim(EdName.Text);
-      AType := Trim(EdType.Text);
-      if AType = '' then AType := 'Integer';
-      Result := True;
-    end;
+    WKCollectUnitTypes(Lines, UnitTypes);
+    WKCollectLocalTypes(Lines, HeaderLine, BeginLine, LocalTypes);
+    Result := WKShowAddLocalVariableDialog(UnitTypes, LocalTypes, AName, AType);
   finally
-    Form.Free;
+    UnitTypes.Free;
+    LocalTypes.Free;
   end;
 end;
 
@@ -5599,7 +5667,7 @@ begin
   end;
 
   AType := 'Integer';
-  if not WKPromptAddLocalVariable(Name, AType) then Exit;
+  if not WKPromptAddLocalVariable(Lines, HeaderLine, BeginLine, Name, AType) then Exit;
 
   if Name = '' then Exit;
 

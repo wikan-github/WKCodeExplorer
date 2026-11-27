@@ -26,6 +26,11 @@
         <UnitName Value="WKCodeExplorer"/>
       </Item>
       <Item>
+        <Filename Value="WKAddLocalVariableForm.pas"/>
+        <Type Value="Unit"/>
+        <UnitName Value="WKAddLocalVariableForm"/>
+      </Item>
+      <Item>
         <Filename Value="WKCodeExplOpts.pas"/>
         <Type Value="Unit"/>
         <UnitName Value="WKCodeExplOpts"/>
@@ -37,6 +42,9 @@
       </Item>
       <Item>
         <Filename Value="WKCodeExplorer.lfm"/>
+      </Item>
+      <Item>
+        <Filename Value="WKAddLocalVariableForm.lfm"/>
       </Item>
     </Files>
     <RequiredPkgs>
