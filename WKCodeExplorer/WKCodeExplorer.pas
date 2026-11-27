@@ -86,6 +86,8 @@ type
   TOnJumpToCode = procedure(Sender: TObject; const Filename: string;
                             const Caret: TPoint; TopLine: integer) of object;
 
+  TWKTreeNodeArray = array of TTreeNode;
+
   TWKCodeExplorerViewFlag = (
     cevCodeRefreshNeeded,
     cevDirectivesRefreshNeeded,
@@ -184,6 +186,9 @@ type
     procedure WKPasteMenuItemClick(Sender: TObject);
     procedure WKDeleteMenuItemClick(Sender: TObject);
     function FindClassCTNode(CurNode: TObject): TCodeTreeNode;
+    function WKCollectSelectedCopyNodes(out Nodes: TWKTreeNodeArray): Integer;
+    function WKIsMultiCopySupportedNode(ANode: TTreeNode; out AIsClass: Boolean): Boolean;
+    function WKCopyEnabledForSelection: Boolean;
     procedure TreePopupmenuPopup(Sender: TObject);
     procedure TreeviewDblClick(Sender: TObject);
     procedure TreeviewDeletion(Sender: TObject; Node: TTreeNode);
@@ -364,6 +369,7 @@ end;
 function WKRoutineKeywordLenAt(const S: string; P: Integer): Integer;
 begin
   Result := 0;
+  if SameText(Copy(S, P, 18), 'class constructor ') then Exit(18);
   if SameText(Copy(S, P, 16), 'class procedure ') then Exit(16);
   if SameText(Copy(S, P, 15), 'class function ') then Exit(15);
   if SameText(Copy(S, P, 10), 'procedure ') then Exit(10);
@@ -779,6 +785,33 @@ begin
   end;
 end;
 
+function WKIsMultiSelectModuleCopyText(const Text: string): Boolean;
+var
+  SL: TStringList;
+  I: Integer;
+  S: string;
+  HasName: Boolean;
+begin
+  Result := False;
+  if not WKIsModuleCopyText(Text) then Exit;
+  HasName := False;
+  SL := TStringList.Create;
+  try
+    SL.Text := Text;
+    for I := 0 to SL.Count - 1 do
+    begin
+      S := Trim(SL[I]);
+      if S = '' then Continue;
+      if SameText(Copy(S, 1, 7), '//NAME:') then HasName := True;
+      // Header markers of a single-item MODULECOPY are before "unit".
+      if SameText(Copy(S, 1, 5), 'unit ') or SameText(S, 'interface') then Break;
+    end;
+  finally
+    SL.Free;
+  end;
+  Result := not HasName;
+end;
+
 function WKParseModuleCopy(const Text: string;
   out Vis, ItemName, Decl, Body: string): Boolean;
 var
@@ -1006,6 +1039,9 @@ begin
   Name:='WKCodeExplorer';
   UpdateCaption;
 
+  // Allow Ctrl+click and Shift+click ranges in the code tree.
+  CodeTreeview.Options := CodeTreeview.Options + [tvoAllowMultiselect];
+
   // Add Copy menu item to TreePopupmenu
   WKCopyMenuItem := TMenuItem.Create(Self);
   WKCopyMenuItem.Caption := 'Copy';
@@ -1226,9 +1262,157 @@ begin
   end;
 end;
 
+function TWKCodeExplorerView.WKCollectSelectedCopyNodes(
+  out Nodes: TWKTreeNodeArray): Integer;
+var
+  TV: TCustomTreeView;
+  N: TTreeNode;
+  I: Integer;
+begin
+  SetLength(Nodes, 0);
+  Result := 0;
+  TV := GetCurrentTreeView;
+  if TV = nil then Exit;
+  if tvoAllowMultiselect in TV.Options then
+  begin
+    N := TV.GetFirstMultiSelected;
+    while N <> nil do
+    begin
+      if N.Data <> nil then
+      begin
+        I := 0;
+        while (I < Length(Nodes)) and (Nodes[I] <> N) do Inc(I);
+        if I = Length(Nodes) then
+        begin
+          SetLength(Nodes, I + 1);
+          Nodes[I] := N;
+        end;
+      end;
+      N := N.GetNextMultiSelected;
+    end;
+  end;
+  if (Length(Nodes) = 0) and (TV.Selected <> nil) and (TV.Selected.Data <> nil) then
+  begin
+    SetLength(Nodes, 1);
+    Nodes[0] := TV.Selected;
+  end;
+  Result := Length(Nodes);
+end;
+
+function TWKCodeExplorerView.WKIsMultiCopySupportedNode(ANode: TTreeNode;
+  out AIsClass: Boolean): Boolean;
+var
+  NodeData: TViewNodeData;
+  FoundNode: TCodeTreeNode;
+  CodeBuffer: TCodeBuffer;
+  ACodeTool: TCodeTool;
+  SL: TStringList;
+  AName: string;
+  I: Integer;
+begin
+  Result := False;
+  AIsClass := False;
+  if ANode = nil then Exit;
+  NodeData := TViewNodeData(ANode.Data);
+  if NodeData = nil then Exit;
+
+  if NodeData.Desc = ctnTypeDefinition then
+  begin
+    FoundNode := FindClassCTNode(NodeData);
+    if (FoundNode = nil) or (FoundNode.FirstChild = nil) then Exit;
+    if not (FoundNode.FirstChild.Desc in AllClasses) then Exit;
+    CodeBuffer := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if CodeBuffer = nil then Exit;
+    ACodeTool := nil;
+    CodeToolBoss.Explore(CodeBuffer, ACodeTool, false);
+    if ACodeTool = nil then Exit;
+    AName := ACodeTool.ExtractDefinitionName(FoundNode);
+    if AName = '' then Exit;
+    SL := TStringList.Create;
+    try
+      SL.Text := CodeBuffer.Source;
+      for I := 0 to SL.Count - 1 do
+        if Pos(AName + ' = class', SL[I]) > 0 then
+        begin
+          AIsClass := True;
+          Result := True;
+          Exit;
+        end;
+    finally
+      SL.Free;
+    end;
+    Exit;
+  end;
+
+  if NodeData.Desc = ctnProcedure then
+  begin
+    FoundNode := FindClassCTNode(NodeData);
+    if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+       (FoundNode.FirstChild.Desc in AllClasses) then Exit; // class member
+    if Pos('.', NodeData.Path) > 0 then Exit;               // nested routine
+    Result := True;
+  end;
+end;
+
+function TWKCodeExplorerView.WKCopyEnabledForSelection: Boolean;
+var
+  Nodes: TWKTreeNodeArray;
+  Count, I: Integer;
+  NodeData: TViewNodeData;
+  IsClass: Boolean;
+  FoundNode: TCodeTreeNode;
+begin
+  Result := False;
+  Count := WKCollectSelectedCopyNodes(Nodes);
+  if Count = 0 then Exit;
+
+  if Count > 1 then
+  begin
+    for I := 0 to Count - 1 do
+      if not WKIsMultiCopySupportedNode(Nodes[I], IsClass) then Exit;
+    Result := True;
+    Exit;
+  end;
+
+  // Single item: keep the existing enable rule, including MEMBERSCOPY.
+  NodeData := TViewNodeData(Nodes[0].Data);
+  if NodeData = nil then Exit;
+  if NodeData.Desc = ctnTypeDefinition then
+  begin
+    FoundNode := FindClassCTNode(NodeData);
+    Result := (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+              (FoundNode.FirstChild.Desc in AllClasses);
+  end
+  else if NodeData.Desc in [ctnProcedure, ctnProperty] then
+  begin
+    FoundNode := FindClassCTNode(NodeData);
+    if (FoundNode <> nil) and (FoundNode.FirstChild <> nil) and
+       (FoundNode.FirstChild.Desc in AllClasses) then
+      Result := True
+    else if NodeData.Desc = ctnProcedure then
+      Result := True;
+  end;
+end;
+
 procedure TWKCodeExplorerView.WKCopyMenuItemClick(Sender: TObject);
+type
+  TMultiDecl = record
+    IsClass: Boolean;
+    SortLine: Integer;
+    Name, Params, Text: string;
+    IsPublic: Boolean;
+  end;
+  TMultiBody = record
+    SortLine: Integer;
+    Text: string;
+  end;
+  TMultiDeclArray = array of TMultiDecl;
+  TMultiBodyArray = array of TMultiBody;
 const
   CRLF = #13#10;
+var
+  MultiDecls: TMultiDeclArray;
+  MultiBodies: TMultiBodyArray;
 
   function PosToLineIndex(const S: string; P: Integer): Integer;
   var
@@ -1256,6 +1440,294 @@ const
     Result := (Pos(APrefix, AText) = 1) and
       ((Length(AText) = Length(APrefix)) or
        not IsIdentChar2(AText[Length(APrefix) + 1]));
+  end;
+
+  function FindClassDeclRange(ALines: TStringList; const AName: string;
+    out AStart, AEnd: Integer): Boolean;
+  var
+    LI: Integer;
+  begin
+    Result := False;
+    AStart := -1;
+    AEnd := -1;
+    if ALines = nil then Exit;
+    for LI := 0 to ALines.Count - 1 do
+      if Pos(AName + ' = class', ALines[LI]) > 0 then
+      begin
+        AStart := LI;
+        // Include the leading "{ Name }" line when it is on its own line.
+        // Single-class copy always emits that comment above the declaration.
+        if (AStart > 0) and (Pos('{ ' + AName + ' }', ALines[AStart - 1]) > 0) then
+          Dec(AStart);
+        Break;
+      end;
+    if AStart < 0 then Exit;
+    for LI := AStart + 1 to ALines.Count - 1 do
+      if SameText(Trim(ALines[LI]), 'end;') then
+      begin
+        AEnd := LI;
+        Result := True;
+        Exit;
+      end;
+  end;
+
+  function BuildClassDeclText(ALines: TStringList; AStart, AEnd: Integer;
+    const AName: string): string;
+  var
+    LI, TagPos: Integer;
+    Tag, T: string;
+    HasComment: Boolean;
+  begin
+    Result := '';
+    Tag := '{ ' + AName + ' }';
+    HasComment := False;
+    for LI := AStart to AEnd do
+      if Pos(Tag, ALines[LI]) > 0 then
+      begin
+        HasComment := True;
+        Break;
+      end;
+    if HasComment then Result := '  ' + Tag + CRLF;
+    for LI := AStart to AEnd do
+    begin
+      T := ALines[LI];
+      TagPos := Pos(Tag, T);
+      if TagPos > 0 then
+      begin
+        Delete(T, TagPos, Length(Tag));
+        while (Length(T) > 0) and (T[1] in [' ', #9]) do
+          Delete(T, 1, 1);
+      end;
+      if Trim(T) = '' then Continue;
+      Result := Result + T + CRLF;
+    end;
+  end;
+
+  function RoutineDeclWithOverload(ALines: TStringList; AStart, AEnd: Integer): string;
+  var
+    LI, Limit: Integer;
+  begin
+    Result := WKJoinLineRange(ALines, AStart, AEnd);
+    Limit := AEnd + 2;
+    if Limit >= ALines.Count then Limit := ALines.Count - 1;
+    for LI := AEnd to Limit do
+      if Pos('overload;', LowerCase(ALines[LI])) > 0 then
+      begin
+        if Pos('overload;', LowerCase(Result)) = 0 then
+          Result := Result + ' overload;';
+        Break;
+      end;
+  end;
+
+  procedure AddDecl(AIsClass: Boolean; ASortLine: Integer;
+    const AName, AParams, AText: string; AIsPublic: Boolean);
+  var
+    I, N: Integer;
+  begin
+    I := 0;
+    while I < Length(MultiDecls) do
+    begin
+      if (MultiDecls[I].IsClass = AIsClass) and SameText(MultiDecls[I].Name, AName)
+         and (AIsClass or SameText(MultiDecls[I].Params, AParams)) then Exit;
+      Inc(I);
+    end;
+    N := Length(MultiDecls);
+    SetLength(MultiDecls, N + 1);
+    MultiDecls[N].IsClass := AIsClass;
+    MultiDecls[N].SortLine := ASortLine;
+    MultiDecls[N].Name := AName;
+    MultiDecls[N].Params := AParams;
+    MultiDecls[N].Text := AText;
+    MultiDecls[N].IsPublic := AIsPublic;
+  end;
+
+  procedure AddBody(ASortLine: Integer; const AText: string);
+  var
+    I, N: Integer;
+  begin
+    if Trim(AText) = '' then Exit;
+    I := 0;
+    while I < Length(MultiBodies) do
+    begin
+      if (MultiBodies[I].SortLine = ASortLine) and
+         SameText(MultiBodies[I].Text, AText) then Exit;
+      Inc(I);
+    end;
+    N := Length(MultiBodies);
+    SetLength(MultiBodies, N + 1);
+    MultiBodies[N].SortLine := ASortLine;
+    MultiBodies[N].Text := AText;
+  end;
+
+  procedure AddClassBodies(ALines: TStringList; const AClassName: string);
+  var
+    LI, LJ, LK, IndentLen, CurrIndentLen: Integer;
+    Trimmed, TrimmedLine, BodyText, Tag: string;
+    IsRoutine, Done: Boolean;
+    Indent, CurrIndent: string;
+  begin
+    Indent := '';
+    LI := 0;
+    while LI < ALines.Count do
+    begin
+      if Pos('implementation', ALines[LI]) > 0 then Break;
+      Inc(LI);
+    end;
+    if LI >= ALines.Count then Exit;
+    Inc(LI);
+
+    while LI < ALines.Count do
+    begin
+      Trimmed := ALines[LI];
+      while (Length(Trimmed) > 0) and (Trimmed[1] = ' ') do
+        Delete(Trimmed, 1, 1);
+      // WKHeaderName uses WKRoutineKeywordLenAt, so class procedure, class
+      // function, class constructor, destructor and operator bodies are
+      // recognised. It returns "Owner.Name" for class-qualified headers.
+      IsRoutine := (Pos(AClassName + '.', WKHeaderName(Trimmed)) = 1);
+      if not IsRoutine then
+      begin
+        Inc(LI);
+        Continue;
+      end;
+
+      Indent := '';
+      for LJ := 1 to Length(ALines[LI]) do
+      begin
+        if ALines[LI][LJ] = ' ' then
+          Indent := Indent + ' '
+        else
+          Break;
+      end;
+      IndentLen := Length(Indent);
+
+      BodyText := '';
+      Done := False;
+      LJ := LI;
+      while LJ < ALines.Count do
+      begin
+        TrimmedLine := ALines[LJ];
+        Tag := '{ ' + AClassName + ' }';
+        if Pos(Tag, TrimmedLine) > 0 then
+        begin
+          Delete(TrimmedLine, Pos(Tag, TrimmedLine), Length(Tag));
+          while (Length(TrimmedLine) > 0) and (TrimmedLine[1] in [' ', #9]) do
+            Delete(TrimmedLine, 1, 1);
+        end;
+        if LJ = LI then
+          BodyText := TrimmedLine
+        else
+          BodyText := BodyText + CRLF + TrimmedLine;
+
+        CurrIndent := '';
+        for LK := 1 to Length(ALines[LJ]) do
+        begin
+          if ALines[LJ][LK] = ' ' then
+            CurrIndent := CurrIndent + ' '
+          else
+            Break;
+        end;
+        CurrIndentLen := Length(CurrIndent);
+        TrimmedLine := ALines[LJ];
+        while (Length(TrimmedLine) > 0) and (TrimmedLine[1] = ' ') do
+          Delete(TrimmedLine, 1, 1);
+        if (SameText(TrimmedLine, 'end;')) and (CurrIndentLen = IndentLen) then
+        begin
+          AddBody(LJ, BodyText);
+          LI := LJ + 1;
+          Done := True;
+          Break;
+        end;
+        Inc(LJ);
+      end;
+      if not Done then LI := LJ;
+    end;
+  end;
+
+  procedure SortDecls;
+  var
+    I, J: Integer;
+    Tmp: TMultiDecl;
+  begin
+    if Length(MultiDecls) < 2 then Exit;
+    for I := 0 to High(MultiDecls) - 1 do
+      for J := I + 1 to High(MultiDecls) do
+        if MultiDecls[J].SortLine < MultiDecls[I].SortLine then
+        begin
+          Tmp := MultiDecls[I];
+          MultiDecls[I] := MultiDecls[J];
+          MultiDecls[J] := Tmp;
+        end;
+  end;
+
+  procedure SortBodies;
+  var
+    I, J: Integer;
+    Tmp: TMultiBody;
+  begin
+    if Length(MultiBodies) < 2 then Exit;
+    for I := 0 to High(MultiBodies) - 1 do
+      for J := I + 1 to High(MultiBodies) do
+        if MultiBodies[J].SortLine < MultiBodies[I].SortLine then
+        begin
+          Tmp := MultiBodies[I];
+          MultiBodies[I] := MultiBodies[J];
+          MultiBodies[J] := Tmp;
+        end;
+  end;
+
+  function BuildMultiCopyText: string;
+  var
+    I: Integer;
+    HasType, FirstItem: Boolean;
+  begin
+    SortDecls;
+    SortBodies;
+    Result := '//MMWIN:MODULECOPY' + CRLF;
+    Result := Result + 'unit _MM_Copy_Buffer_;' + CRLF + CRLF;
+    Result := Result + 'interface' + CRLF + CRLF;
+
+    HasType := False;
+    for I := 0 to High(MultiDecls) do
+      if MultiDecls[I].IsClass then
+      begin
+        HasType := True;
+        Break;
+      end;
+    if HasType then
+    begin
+      Result := Result + 'type' + CRLF;
+      FirstItem := True;
+      for I := 0 to High(MultiDecls) do
+        if MultiDecls[I].IsClass then
+        begin
+          if not FirstItem then Result := Result + CRLF;
+          Result := Result + MultiDecls[I].Text;
+          FirstItem := False;
+        end;
+      Result := Result + CRLF;
+    end;
+
+    FirstItem := True;
+    for I := 0 to High(MultiDecls) do
+      if (not MultiDecls[I].IsClass) and MultiDecls[I].IsPublic
+         and (MultiDecls[I].Text <> '') then
+      begin
+        if not FirstItem then Result := Result + CRLF;
+        Result := Result + MultiDecls[I].Text + CRLF;
+        FirstItem := False;
+      end;
+    if not FirstItem then Result := Result + CRLF;
+
+    Result := Result + 'implementation' + CRLF + CRLF;
+    FirstItem := True;
+    for I := 0 to High(MultiBodies) do
+    begin
+      if not FirstItem then Result := Result + CRLF;
+      Result := Result + MultiBodies[I].Text + CRLF;
+      FirstItem := False;
+    end;
+    Result := Result + 'end.' + CRLF;
   end;
 
 var
@@ -1286,6 +1758,9 @@ var
   MemberLineIdx, VisLineIdx, P: Integer;
   DotPos: Integer;
   VisName, MemberDeclText, RoutineText, MemberName: string;
+  MultiNodes: TWKTreeNodeArray;
+  MultiCount, MultiNodeIndex: Integer;
+  MultiIsClass: Boolean;
 
   // Standalone routine (not a class member): //MMWIN:MODULECOPY.
   // Interface declaration => declaration + body; implementation only => body.
@@ -1396,9 +1871,159 @@ var
     end;
   end;
 
+  procedure CopyMultiSelected;
+  var
+    Buf: TCodeBuffer;
+    Tool: TCodeTool;
+    Src: string;
+    Lines: TStringList;
+    ImplIdx, LI, HdrEnd, BodyStart, BodyEnd, DeclLine, SelLine: Integer;
+    DeclSortLine, BodySortLine, ClassStart, ClassEnd, NodeIdx: Integer;
+    NodeData: TViewNodeData;
+    FoundRoutine: TCodeTreeNode;
+    AName, LName, LParams, LDecl, LBody, HText: string;
+    IsPublic: Boolean;
+  begin
+    SetLength(MultiDecls, 0);
+    SetLength(MultiBodies, 0);
+    Buf := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if Buf = nil then Exit;
+    Tool := nil;
+    CodeToolBoss.Explore(Buf, Tool, false);
+    if Tool = nil then Exit;
+    Src := Buf.Source;
+    Lines := TStringList.Create;
+    try
+      Lines.Text := Src;
+      ImplIdx := -1;
+      for LI := 0 to Lines.Count - 1 do
+        if SameText(Trim(Lines[LI]), 'implementation') then
+        begin
+          ImplIdx := LI;
+          Break;
+        end;
+      if ImplIdx < 0 then Exit;
+
+      for NodeIdx := 0 to High(MultiNodes) do
+      begin
+        NodeData := TViewNodeData(MultiNodes[NodeIdx].Data);
+        if NodeData = nil then Continue;
+        if not WKIsMultiCopySupportedNode(MultiNodes[NodeIdx], MultiIsClass) then
+        begin
+          MessageDlg('Multi-select copy supports classes and standalone routines only',
+            mtInformation, [mbOK], 0);
+          Exit;
+        end;
+
+        if MultiIsClass then
+        begin
+          FoundNode := FindClassCTNode(NodeData);
+          if FoundNode = nil then Continue;
+          AName := Tool.ExtractDefinitionName(FoundNode);
+          if AName = '' then AName := MultiNodes[NodeIdx].Text;
+          if AName = '' then Continue;
+          if not FindClassDeclRange(Lines, AName, ClassStart, ClassEnd) then
+          begin
+            MessageDlg('Cannot copy: class declaration not found for ' + AName,
+              mtError, [mbOK], 0);
+            Exit;
+          end;
+          AddDecl(True, PosToLineIndex(Src, NodeData.StartPos), AName, '',
+            BuildClassDeclText(Lines, ClassStart, ClassEnd, AName), False);
+          AddClassBodies(Lines, AName);
+          Continue;
+        end;
+
+        SelLine := PosToLineIndex(Src, NodeData.StartPos);
+        FoundRoutine := Tool.FindDeepestNodeAtPos(NodeData.StartPos, false);
+        if (FoundRoutine = nil) or (FoundRoutine.Desc <> ctnProcedure) then Continue;
+        LName := Tool.ExtractProcName(FoundRoutine, []);
+        if (LName = '') or (Pos('.', LName) > 0) then Continue;
+
+        if SelLine < ImplIdx then
+        begin
+          HdrEnd := WKHeaderEndLine(Lines, SelLine);
+          LDecl := RoutineDeclWithOverload(Lines, SelLine, HdrEnd);
+          LParams := WKNormHeaderTail(LDecl);
+          BodyStart := WKFindRoutineHeader(Lines, ImplIdx + 1, Lines.Count - 1,
+            LName, LParams, True, False);
+          if BodyStart < 0 then
+          begin
+            MessageDlg('Cannot copy: implementation body not found for ' + LName,
+              mtError, [mbOK], 0);
+            Exit;
+          end;
+          BodyEnd := WKFindRoutineEndLine(Lines, BodyStart);
+          if BodyEnd < 0 then
+          begin
+            MessageDlg('Cannot copy: implementation body not found for ' + LName,
+              mtError, [mbOK], 0);
+            Exit;
+          end;
+          LBody := WKJoinLineRange(Lines, BodyStart, BodyEnd);
+          IsPublic := True;
+          DeclSortLine := SelLine;
+          BodySortLine := BodyStart;
+        end
+        else
+        begin
+          HdrEnd := WKHeaderEndLine(Lines, SelLine);
+          HText := WKJoinLineRange(Lines, SelLine, HdrEnd);
+          LParams := WKNormHeaderTail(HText);
+          BodyEnd := WKFindRoutineEndLine(Lines, SelLine);
+          if BodyEnd < 0 then
+          begin
+            MessageDlg('Cannot copy: implementation body not found for ' + LName,
+              mtError, [mbOK], 0);
+            Exit;
+          end;
+          LBody := WKJoinLineRange(Lines, SelLine, BodyEnd);
+          DeclLine := WKFindRoutineHeader(Lines, 0, ImplIdx - 1,
+            LName, LParams, True, False);
+          if DeclLine >= 0 then
+          begin
+            HdrEnd := WKHeaderEndLine(Lines, DeclLine);
+            LDecl := RoutineDeclWithOverload(Lines, DeclLine, HdrEnd);
+            IsPublic := True;
+            DeclSortLine := DeclLine;
+          end
+          else
+          begin
+            LDecl := '';
+            IsPublic := False;
+            DeclSortLine := SelLine;
+          end;
+          BodySortLine := SelLine;
+        end;
+
+        AddDecl(False, DeclSortLine, LName, LParams, LDecl, IsPublic);
+        AddBody(BodySortLine, LBody);
+      end;
+
+      Clipboard.AsText := BuildMultiCopyText;
+    finally
+      Lines.Free;
+    end;
+  end;
+
 begin
   CurTreeView := GetCurrentTreeView;
   if CurTreeView = nil then exit;
+
+  MultiCount := WKCollectSelectedCopyNodes(MultiNodes);
+  if MultiCount > 1 then
+  begin
+    for MultiNodeIndex := 0 to MultiCount - 1 do
+      if not WKIsMultiCopySupportedNode(MultiNodes[MultiNodeIndex], MultiIsClass) then
+      begin
+        MessageDlg('Multi-select copy supports classes and standalone routines only',
+          mtInformation, [mbOK], 0);
+        Exit;
+      end;
+    CopyMultiSelected;
+    Exit;
+  end;
+
   if tvoAllowMultiselect in CurTreeView.Options then
     CurItem := CurTreeView.GetFirstMultiSelected
   else
@@ -1453,9 +2078,9 @@ begin
           while (Length(Trimmed) > 0) and (Trimmed[1] = ' ') do
             Delete(Trimmed, 1, 1);
 
-          IsRoutine := (Pos('procedure ' + AClassName + '.', Trimmed) = 1) or
-                       (Pos('function ' + AClassName + '.', Trimmed) = 1) or
-                       (Pos('constructor ' + AClassName + '.', Trimmed) = 1);
+          // Same keyword recognition as multi-select: class procedure, class
+          // function, class constructor, destructor and operator bodies.
+          IsRoutine := (Pos(AClassName + '.', WKHeaderName(Trimmed)) = 1);
 
           if not IsRoutine then
           begin
@@ -2478,6 +3103,12 @@ begin
 
   if WKIsModuleCopyText(ClipText) then
   begin
+    if WKIsMultiSelectModuleCopyText(ClipText) then
+    begin
+      MessageDlg('Multi-select paste is not implemented yet',
+        mtInformation, [mbOK], 0);
+      Exit;
+    end;
     PasteStandaloneRoutine;
     Exit;
   end;
@@ -3014,6 +3645,9 @@ begin
       end;
     end;
   end;
+  // Copy: single item keeps its existing rule; multiple items require every
+  // selected node to be a class or a standalone routine.
+  WKCopyMenuItem.Enabled := WKCopyEnabledForSelection;
   //DebugLn(['TWKCodeExplorerView.TreePopupmenuPopup ',WKCERenameIDEMenuCommand.Visible]);
 end;
 
@@ -4827,7 +5461,8 @@ begin
       if TVNode=nil then exit;
       //debugln(['TWKCodeExplorerView.SelectCodePosition ',TVNode.Text]);
       CodeTreeview.BeginUpdate;
-      CodeTreeview.Options:=CodeTreeview.Options-[tvoAllowMultiselect];
+      CodeTreeview.Options:=CodeTreeview.Options+[tvoAllowMultiselect];
+      CodeTreeview.ClearSelection;
       if not TVNode.IsVisible then begin
         // collapse all other and expand only this
         CodeTreeview.FullCollapse;
