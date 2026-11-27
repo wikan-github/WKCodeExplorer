@@ -352,7 +352,10 @@ end;
 
 function IsRoutineHeaderFor(const Line, ClassName: string): Boolean;
 const
-  Kw: array[0..3] of string = ('procedure ', 'function ', 'constructor ', 'destructor ');
+  Kw: array[0..7] of string = (
+    'class constructor ', 'class procedure ', 'class function ',
+    'procedure ', 'function ', 'constructor ', 'destructor ', 'operator '
+  );
 var
   I, L, DotPos: Integer;
 begin

@@ -1770,6 +1770,7 @@ var
   FoundNode, MemberCTNode: TCodeTreeNode;
   Impls: TStringList;
   Out: string;
+  CopyUnit: string;
   I, J, K: Integer;
   S: string;
   CommentTag: string;
@@ -2198,6 +2199,18 @@ begin
 
       // Build CLASSCOPY text
       Out := BuildClassCopyText(Source, AClassName, ClassStart, ClassEnd, Impls);
+
+      // Carry the source unit name for the paste side, as multi-select does.
+      CopyUnit := WKUnitNameFromSource(Source);
+      if CopyUnit <> '' then
+      begin
+        J := Pos(CRLF, Out);
+        if J > 0 then
+          Out := Copy(Out, 1, J) + '//UNIT:' + CopyUnit + CRLF +
+            Copy(Out, J + 1, Length(Out))
+        else
+          Out := '//UNIT:' + CopyUnit + CRLF + Out;
+      end;
 
       // Set clipboard
       Clipboard.AsText := Out;
@@ -2829,7 +2842,7 @@ var
   SavedCaret: TPoint;
   SavedTopLine: Integer;
   InsertedLinesAbove: Integer;
-  I, J, ImplSectionLine, FinalEndLine: Integer;
+  I, J, K, ImplSectionLine, FinalEndLine: Integer;
   ClassIdx, ClassEndIdx, ClassLineIdx, EndClassIdx: Integer;
   MemberInsertLine, InterfaceIdx, InterfaceLineNo: Integer;
   TypeLineIdx, ClassInsertLine, TargetIndent, CurrentIndent: Integer;
@@ -2841,6 +2854,9 @@ var
   PasteCodeBuffer: TCodeBuffer;
   PasteCodeTool: TCodeTool;
   TargetClassName, CheckHeader, MemberName: string;
+  ClipUnit, UsesNewLine: string;
+  Inserts: TPasteInsertArray;
+  UsesReplaceLine, UsesStartIdx, UsesSemiIdx: Integer;
 
   function LineIndent(const AText: string): Integer;
   begin
@@ -3493,6 +3509,237 @@ var
     end;
   end;
 
+  function ClipDeclWithOverload(ALines: TStringList; AStartIdx: Integer): string;
+  var
+    HE, Limit, LI: Integer;
+  begin
+    HE := WKHeaderEndLine(ALines, AStartIdx);
+    Result := WKJoinLineRange(ALines, AStartIdx, HE);
+    Limit := HE + 2;
+    if Limit >= ALines.Count then Limit := ALines.Count - 1;
+    for LI := HE to Limit do
+      if Pos('overload;', LowerCase(ALines[LI])) > 0 then
+      begin
+        if Pos('overload;', LowerCase(Result)) = 0 then
+          Result := Result + ' overload;';
+        Break;
+      end;
+  end;
+
+  procedure FindClassSectionInsert(ALines: TStringList; AClassIdx,
+    AClassEndIdx: Integer; const ATargetVis: string; out AInsLine: Integer;
+    out AHasSection: Boolean);
+  var
+    K, SectIdx, NextSect: Integer;
+    T: string;
+  begin
+    SectIdx := -1;
+    NextSect := AClassEndIdx;
+    for K := AClassIdx + 1 to AClassEndIdx - 1 do
+    begin
+      T := LowerCase(Trim(ALines[K]));
+      if (T = 'private') or (T = 'protected') or (T = 'public') or
+         (T = 'published') then
+      begin
+        if SectIdx >= 0 then
+        begin
+          NextSect := K;
+          Break;
+        end;
+        if T = ATargetVis then SectIdx := K;
+      end;
+    end;
+    AInsLine := NextSect + 1;
+    AHasSection := SectIdx >= 0;
+  end;
+
+  function BuildSectionText(const AVisibility, ADecls: string;
+    AHasSection: Boolean): string;
+  begin
+    if AHasSection then
+      Result := ADecls
+    else
+      Result := '  ' + AVisibility + CRLF + ADecls;
+  end;
+
+  procedure PasteMultiClass;
+  var
+    ClipLines, ALines: TStringList;
+    Classes, Routines, Bodies: TMultiPasteArray;
+    Inserts: TPasteInsertArray;
+    DummyUnit, Owner, SkippedText, PublicText, PrivateText, BodyText: string;
+    DeclSource, Disp, T: string;
+    PastedKeys: array of string;
+    ImplLine, FinalLine, CIdx, CEndIdx, PubInsLine, PrivInsLine: Integer;
+    B, R, N, PastedCount: Integer;
+    HasPubSect, HasPrivSect, IsDup: Boolean;
+  begin
+    if not ParseMultiClip(ClipLines, DummyUnit, Classes, Routines, Bodies) then Exit;
+    try
+      Owner := CurrentPasteClassOwner;
+      if Owner = '' then Exit;
+
+      EditorText := Syn.Text;
+      ALines := TStringList.Create;
+      try
+        ALines.Text := EditorText;
+        ImplLine := -1;
+        FinalLine := -1;
+        for N := 0 to ALines.Count - 1 do
+        begin
+          T := Trim(ALines[N]);
+          if (ImplLine < 0) and SameText(T, 'implementation') then ImplLine := N + 1;
+          if SameText(T, 'end.') then FinalLine := N + 1;
+        end;
+        if (ImplLine < 0) or (FinalLine < 0) then Exit;
+
+        CIdx := -1;
+        CEndIdx := -1;
+        for N := 0 to ALines.Count - 1 do
+        begin
+          if (CIdx < 0) and (Pos(Owner + ' = class', ALines[N]) > 0) then
+            CIdx := N
+          else if (CIdx >= 0) and (Trim(ALines[N]) = 'end;') then
+          begin
+            CEndIdx := N;
+            Break;
+          end;
+        end;
+        if (CIdx < 0) or (CEndIdx <= CIdx) then
+        begin
+          MessageDlg('Cannot paste: class ' + Owner + ' not found',
+            mtError, [mbOK], 0);
+          Exit;
+        end;
+
+        SetLength(Inserts, 0);
+        SetLength(PastedKeys, 0);
+        SkippedText := '';
+        PublicText := '';
+        PrivateText := '';
+        BodyText := '';
+        PastedCount := 0;
+
+        for B := 0 to High(Bodies) do
+        begin
+          if Bodies[B].IsClassBody then Continue;
+          if Bodies[B].Name = '' then Continue;
+
+          IsDup :=
+            (WKFindRoutineHeader(ALines, CIdx + 1, CEndIdx - 1,
+               Bodies[B].Name, Bodies[B].Params, False, False) >= 0) or
+            (WKFindRoutineHeader(ALines, ImplLine, ALines.Count - 1,
+               Owner + '.' + Bodies[B].Name, Bodies[B].Params, True, True) >= 0);
+          if not IsDup then
+            for N := 0 to High(PastedKeys) do
+              if PastedKeys[N] = UpperCase(Bodies[B].Name + Bodies[B].Params) then
+              begin
+                IsDup := True;
+                Break;
+              end;
+          if IsDup then
+          begin
+            Disp := Bodies[B].Name + Bodies[B].Params;
+            if SkippedText <> '' then SkippedText := SkippedText + ', ';
+            SkippedText := SkippedText + Disp;
+            Continue;
+          end;
+
+          N := Length(PastedKeys);
+          SetLength(PastedKeys, N + 1);
+          PastedKeys[N] := UpperCase(Bodies[B].Name + Bodies[B].Params);
+          Inc(PastedCount);
+
+          if Bodies[B].IsPublic then
+          begin
+            R := -1;
+            for N := 0 to High(Routines) do
+              if SameText(Routines[N].Name, Bodies[B].Name) and
+                 (Routines[N].Params = Bodies[B].Params) then
+              begin
+                R := N;
+                Break;
+              end;
+            if R >= 0 then
+              DeclSource := ClipDeclWithOverload(ClipLines, Routines[R].SortLine)
+            else
+              DeclSource := ClipDeclWithOverload(ClipLines, Bodies[B].SortLine);
+            DeclSource := WKIndentText(WKDequalifyMemberBlock(DeclSource, Owner), 2);
+            if PublicText <> '' then PublicText := PublicText + CRLF + CRLF;
+            PublicText := PublicText + DeclSource;
+          end
+          else
+          begin
+            DeclSource := ClipDeclWithOverload(ClipLines, Bodies[B].SortLine);
+            DeclSource := WKIndentText(WKDequalifyMemberBlock(DeclSource, Owner), 2);
+            if PrivateText <> '' then PrivateText := PrivateText + CRLF + CRLF;
+            PrivateText := PrivateText + DeclSource;
+          end;
+
+          if BodyText <> '' then BodyText := BodyText + CRLF + CRLF;
+          BodyText := BodyText + WKQualifyRoutineHeader(Bodies[B].Body, Owner);
+        end;
+
+        if PastedCount = 0 then
+        begin
+          if SkippedText <> '' then
+            MessageDlg('Skipped duplicates: ' + SkippedText,
+              mtInformation, [mbOK], 0);
+          Exit;
+        end;
+
+        FindClassSectionInsert(ALines, CIdx, CEndIdx, 'public',
+          PubInsLine, HasPubSect);
+        FindClassSectionInsert(ALines, CIdx, CEndIdx, 'private',
+          PrivInsLine, HasPrivSect);
+
+        if (PrivateText <> '') and (PublicText <> '') and
+           (PrivInsLine = PubInsLine) then
+        begin
+          T := WKWithTrailingBlankLine(
+            BuildSectionText('private', PrivateText, HasPrivSect));
+          T := T + BuildSectionText('public', PublicText, HasPubSect);
+          AddPasteInsert(Inserts, PrivInsLine, WKWithTrailingBlankLine(T));
+        end
+        else
+        begin
+          if PrivateText <> '' then
+            AddPasteInsert(Inserts, PrivInsLine,
+              WKWithTrailingBlankLine(
+                BuildSectionText('private', PrivateText, HasPrivSect)));
+          if PublicText <> '' then
+            AddPasteInsert(Inserts, PubInsLine,
+              WKWithTrailingBlankLine(
+                BuildSectionText('public', PublicText, HasPubSect)));
+        end;
+        AddPasteInsert(Inserts, FinalLine, WKWithTrailingBlankLine(BodyText));
+
+        SavedCaret := Syn.CaretXY;
+        SavedTopLine := Syn.TopLine;
+        InsertedLinesAbove := 0;
+        Syn.BeginUpdate;
+        try
+          ApplyPasteInserts(Inserts);
+        finally
+          Syn.EndUpdate;
+        end;
+        Syn.CaretXY := Point(SavedCaret.X, SavedCaret.Y + InsertedLinesAbove);
+        Syn.TopLine := SavedTopLine;
+
+        if SkippedText <> '' then
+          Msg := 'Pasted ' + IntToStr(PastedCount) + ' routines into ' + Owner +
+            '; skipped duplicates: ' + SkippedText
+        else
+          Msg := 'Pasted ' + IntToStr(PastedCount) + ' routines into ' + Owner;
+        MessageDlg(Msg, mtInformation, [mbOK], 0);
+      finally
+        ALines.Free;
+      end;
+    finally
+      ClipLines.Free;
+    end;
+  end;
+
   // //MMWIN:MODULECOPY: paste a standalone routine. A selected class node
   // makes it a public method; otherwise it becomes a unit-level routine
   // (interface declaration + implementation body, or the body alone when it
@@ -3720,8 +3967,7 @@ begin
           MessageDlg('no procedures found to convert the method',
             mtInformation, [mbOK], 0)
         else
-          MessageDlg('Multi-select paste is not implemented yet',
-            mtInformation, [mbOK], 0);
+          PasteMultiClass;
         Exit;
       end;
       PasteMultiModule;
@@ -3870,6 +4116,8 @@ begin
       end;
     end;
 
+    SetLength(Inserts, 0);
+    UsesReplaceLine := 0;
     Syn.BeginUpdate;
     try
       // Insert implementations first (highest line number) so earlier
@@ -3991,7 +4239,7 @@ begin
         // Only the case with no interface "type" line adds a "type" line.
         if TypeLineIdx < 0 then
           Decl := 'type' + CRLF + CRLF + Decl;
-        InsertAtLine(ClassInsertLine, WKWithTrailingBlankLine(Decl));
+        AddPasteInsert(Inserts, ClassInsertLine, WKWithTrailingBlankLine(Decl));
         // Add {$M+} when the copied class has a published section and the
         // target unit does not already enable published fields.
         HasPublished := False;
@@ -4017,7 +4265,63 @@ begin
               Break;
             end;
           if InterfaceLineNo > 0 then
-            InsertAtLine(InterfaceLineNo, WKWithTrailingBlankLine('{$M+}'));
+            AddPasteInsert(Inserts, InterfaceLineNo,
+              WKWithTrailingBlankLine('{$M+}'));
+        end;
+
+        // Add the source unit from the CLASSCOPY "//UNIT:" header to the
+        // interface uses clause, using the same rules as PasteMultiModule.
+        ClipUnit := ClipUnitName(ClipText);
+        if ClipUnit <> '' then
+        begin
+          UsesStartIdx := -1;
+          UsesSemiIdx := -1;
+          for I := 0 to ImplSectionLine - 2 do
+          begin
+            S := Trim(Lines[I]);
+            if SameText(Copy(S, 1, 5), 'uses ') or SameText(S, 'uses') then
+            begin
+              UsesStartIdx := I;
+              UsesSemiIdx := I;
+              while (UsesSemiIdx <= ImplSectionLine - 2) and
+                    (Pos(';', Lines[UsesSemiIdx]) = 0) do Inc(UsesSemiIdx);
+              if UsesSemiIdx > ImplSectionLine - 2 then
+              begin
+                UsesStartIdx := -1;
+                UsesSemiIdx := -1;
+              end;
+              Break;
+            end;
+          end;
+          if UsesStartIdx >= 0 then
+          begin
+            UsesNewLine := '';
+            for I := UsesStartIdx to UsesSemiIdx do
+            begin
+              if UsesNewLine = '' then UsesNewLine := Lines[I]
+              else UsesNewLine := UsesNewLine + CRLF + Lines[I];
+            end;
+            if not TextHasUnit(UsesNewLine, ClipUnit) then
+            begin
+              J := 0;
+              for K := Length(Lines[UsesSemiIdx]) downto 1 do
+                if Lines[UsesSemiIdx][K] = ';' then
+                begin
+                  J := K;
+                  Break;
+                end;
+              if J > 0 then
+              begin
+                S := Lines[UsesSemiIdx];
+                Insert(', ' + ClipUnit, S, J);
+                UsesReplaceLine := UsesSemiIdx + 1;
+                UsesNewLine := S;
+              end;
+            end;
+          end
+          else if InterfaceIdx >= 0 then
+            AddPasteInsert(Inserts, InterfaceIdx + 2,
+              'uses ' + ClipUnit + ';');
         end;
         Msg := 'Pasted class as ' + NewName;
       end
@@ -4090,6 +4394,9 @@ begin
           Msg := 'Pasted member as private routine';
         end;
       end;
+      if UsesReplaceLine > 0 then
+        ReplaceEditorLine(UsesReplaceLine, UsesNewLine);
+      ApplyPasteInserts(Inserts);
     finally
       Syn.EndUpdate;
     end;
