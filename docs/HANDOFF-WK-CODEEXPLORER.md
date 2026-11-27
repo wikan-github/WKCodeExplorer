@@ -66,7 +66,8 @@ Only features verified in the IDE are listed below.
 - An invalid name (`123myVar`) shows the confirmation.
 - A name typed in a nested routine's own var section (`Fill`, `yy`) creates `var yy: Integer;` inside `Fill`; verified in the IDE.
 - The dialog is a designer form (`WKAddLocalVariableForm`) with Type name, History and `Edit...`.
-- The Type name list contains primitive types, unit/local type names and history; suggestions no longer include a leading `type` keyword.
+- Type name defaults to `Integer`; the Type name combo lists primitive types, unit-level types and current-routine local types, filters as you type, and strips a leading `type` keyword. All confirmed in the IDE.
+- The separate History combo stores up to 30 chosen types; selecting an entry copies it into Type name, `Edit...` opens the history file, OK saves the chosen type, and Cancel does not. All confirmed in the IDE.
 
 ## 2. FILES CHANGED
 
@@ -76,7 +77,7 @@ Only features verified in the IDE are listed below.
 - `WKCodeExplorer/WKPasteFormat.pas` — clipboard parsing, whole-identifier renaming, and class-declaration/routine extraction helpers for paste (committed earlier).
 - `WKCodeExplorer/WKCodeExplorer.lpk` — package file list includes copy/paste units and the new Ctrl+L form files (committed in `0f3bf6d`).
 - `WKCodeExplorer/WKCodeExplorerRegister.pas` — registration/unit wiring updates for the package, including `WKAddLocalVariableForm` (committed in `0f3bf6d`).
-- `docs/HANDOFF-WK-CODEEXPLORER.md` — updated to reflect verified nested-routine Ctrl+L and the implemented Type name list.
+- `docs/HANDOFF-WK-CODEEXPLORER.md` — updated to reflect verified nested-routine Ctrl+L and all Type name / History checks.
 - `tests/TestVisibility.pas` — pre-existing local worktree edits; not part of any commit.
 
 ## 3. KNOWN ISSUES / LIMITS
@@ -152,7 +153,15 @@ Only features verified in the IDE are listed below.
 5. Duplicate name: "Variable already exists". **Verified**.
 6. Invalid name (`123myVar`): confirmation shown. **Verified**.
 7. Name typed in a nested routine's own var section (`Fill`, `yy`): creates `var yy: Integer;` inside `Fill`. **Verified**.
-8. Type name dropdown: shows primitive types, unit/local type names and history; no leading `type` keyword. **Verified**.
+8. Type name defaults to `Integer`; dropdown contains all 18 primitive types. **Verified**.
+9. Unit-level type declarations appear in Type name; class/record members do not. **Verified**.
+10. Current-routine local types appear in Type name. **Verified**.
+11. Inline `type T = ...` suggests `T`, not `type T`. **Verified**.
+12. Typing filters the Type name list case-insensitively. **Verified**.
+13. Chosen type is saved to History and is at the top on the next Ctrl+L; selecting it fills Type name. **Verified**.
+14. `Edit...` opens `/home/kastawan/.wkcodeexplorer_types.txt`. **Verified**.
+15. Cancel does not add a type to History. **Verified**.
+16. A chosen non-default type is inserted as `Name: Type;` in the var section. **Verified**.
 
 ## 6. RULES
 
