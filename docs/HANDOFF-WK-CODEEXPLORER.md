@@ -1,20 +1,21 @@
 # WK Code Explorer — handoff
 
-Test programs (`PasteFormatTest.pas`, `CopyFormatTest.pas`) and `TestVisibility.pas` live in `~/projects/WKCopyPasteTest/`, outside the repo. The repo has no `WKCodeExplorer/tests/` folder.
+Test programs (`PasteFormatTest.pas`, `CopyFormatTest.pas`) live in `~/projects/WKCopyPasteTest/`, outside the repo. `tests/TestVisibility.pas` is tracked in this repo but has pre-existing local edits.
 
-## Git state (as of 3c5d174)
+## Git state
+
+The WKCodeExplorer feature work and this handoff are committed on `mmx-codeexplorer`. The branch is ahead of `origin/mmx-codeexplorer`; nothing has been pushed.
+
+Local files left out of commits:
 
 ```
-$ git log --oneline -4
-3c5d174 Refresh after delete and paste, default source view, class delete for implementation-section classes, standalone delete
-ac050b9 Standalone routines, nested routines, paste placement and trailing blank line for WKCodeExplorer
-d89bf04 Update WKCodeExplorer handoff for placement, implementation copy and next steps
-40f20c5 Place pasted class inside the interface type block; add {$M+} for published classes; copy implementation-node members
-
 $ git status --short -uall
- M WKCodeExplorer/WKCodeExplorer.pas
  M tests/TestVisibility.pas
+?? codetoolbarexplorer.lps
+?? files.zip
 ```
+
+Latest feature commit: `0f3bf6d Add designer dialog for Ctrl+L local variables and clean type suggestions`.
 
 ## 1. STATUS
 
@@ -63,16 +64,20 @@ Only features verified in the IDE are listed below.
 - The outer body of `LogMessage` inserts into its var section.
 - A duplicate name shows "Variable already exists".
 - An invalid name (`123myVar`) shows the confirmation.
-- NOT verified: a name typed in a nested routine's own var section (`Fill`, `childVar`).
+- A name typed in a nested routine's own var section (`Fill`, `yy`) creates `var yy: Integer;` inside `Fill`; verified in the IDE.
+- The dialog is a designer form (`WKAddLocalVariableForm`) with Type name, History and `Edit...`.
+- The Type name list contains primitive types, unit/local type names and history; suggestions no longer include a leading `type` keyword.
 
 ## 2. FILES CHANGED
 
-- `WKCodeExplorer/WKCodeExplorer.pas` — uncommitted working-tree changes on top of `3c5d174`: Delete for classes/members/standalone routines/module vars-consts, implementation-section class delete fix, default source-order view, forced refresh after Delete/Paste, Ctrl+L Add local variable command (`WKAddLocalVariableExecute`, `WKFindRoutineBodyBounds`, `WKIsAlreadyDeclared`, prompt/validation helpers), and small cleanup of unused locals. Ctrl+L implementation is present and IDE-verified, except the nested `Fill`/`childVar` case.
+- `WKCodeExplorer/WKCodeExplorer.pas` — committed in `0f3bf6d`: Delete for classes/members/standalone routines/module vars-consts, implementation-section class delete fix, default source-order view, forced refresh after Delete/Paste, Ctrl+L Add local variable command (`WKAddLocalVariableExecute`, `WKFindRoutineBodyBounds`, `WKIsAlreadyDeclared`, prompt/validation helpers), nested routine var insertion, and type-name collection that strips a leading `type` keyword.
+- `WKCodeExplorer/WKAddLocalVariableForm.pas` / `.lfm` — new designer form for Ctrl+L (Type name, History, `Edit...`). Committed in `0f3bf6d`; the `.lfm` uses numeric `ModalResult` values (`1` / `2`). User reported that a package reinstall was required before the rebuilt form resource was loaded.
 - `WKCodeExplorer/WKCopyFormat.pas` — helper for building `CLASSCOPY` clipboard text (committed earlier).
 - `WKCodeExplorer/WKPasteFormat.pas` — clipboard parsing, whole-identifier renaming, and class-declaration/routine extraction helpers for paste (committed earlier).
-- `WKCodeExplorer/WKCodeExplorer.lpk` — package file list includes copy/paste units (committed earlier).
-- `WKCodeExplorer/WKCodeExplorerRegister.pas` — registration/unit wiring updates for the package (committed earlier).
-- `tests/TestVisibility.pas` — pre-existing local worktree edits; not part of this handoff update.
+- `WKCodeExplorer/WKCodeExplorer.lpk` — package file list includes copy/paste units and the new Ctrl+L form files (committed in `0f3bf6d`).
+- `WKCodeExplorer/WKCodeExplorerRegister.pas` — registration/unit wiring updates for the package, including `WKAddLocalVariableForm` (committed in `0f3bf6d`).
+- `docs/HANDOFF-WK-CODEEXPLORER.md` — updated to reflect verified nested-routine Ctrl+L and the implemented Type name list.
+- `tests/TestVisibility.pas` — pre-existing local worktree edits; not part of any commit.
 
 ## 3. KNOWN ISSUES / LIMITS
 
@@ -91,18 +96,15 @@ Only features verified in the IDE are listed below.
 - `WKIsAlreadyDeclared` is a best-effort heuristic.
 - Undo: each paste or delete is one undo step; Ctrl+Z does not step back through earlier operations (same as the Delphi editor).
 - The build reports a note for `WKAddLocalVariableCmd` (assigned but never used).
-- The Ctrl+L Type name list (primitive types, unit types, history) is not implemented.
 - `tests/TestVisibility.pas` has uncommitted local edits; not part of any commit.
 
 ## 4. NEXT STEPS
 
-1. Ctrl+L: IDE check of a name typed in a nested routine's own var section (`Fill`, `childVar`).
-2. Ctrl+L: Type name list (primitive types Integer, String, Boolean, Double; unit types; history).
-3. Multi-select copy and paste (`MODULECOPY` from the bottom member list, in source order).
-4. Variables, constants and non-class types: copy and paste into interface.
-5. Enums and other non-class types (`//MMWIN:TYPESCOPY`).
-6. Delete Recovery (JSON log in `.wkdeleted/`, created automatically, refuse if it cannot be written).
-7. Enhancements: expanded branches after refresh; duplicate paste renames (`_1`, `_2`); blank-line spacing after each paste; warn-first scan for undeclared identifiers; optional push of `mmx-explorer-m1` and `mmx-explorer-m2`.
+1. Multi-select copy and paste (`MODULECOPY` from the bottom member list, in source order).
+2. Variables, constants and non-class types: copy and paste into interface.
+3. Enums and other non-class types (`//MMWIN:TYPESCOPY`).
+4. Delete Recovery (JSON log in `.wkdeleted/`, created automatically, refuse if it cannot be written).
+5. Enhancements: expanded branches after refresh; duplicate paste renames (`_1`, `_2`); blank-line spacing after each paste; warn-first scan for undeclared identifiers; optional push of `mmx-explorer-m1` and `mmx-explorer-m2`.
 
 ## 5. TEST PROCEDURE
 
@@ -149,7 +151,8 @@ Only features verified in the IDE are listed below.
 4. Outer body of `LogMessage`: inserts into its var section. **Verified**.
 5. Duplicate name: "Variable already exists". **Verified**.
 6. Invalid name (`123myVar`): confirmation shown. **Verified**.
-7. Name typed in a nested routine's own var section (`Fill`, `childVar`): **NOT RUN**.
+7. Name typed in a nested routine's own var section (`Fill`, `yy`): creates `var yy: Integer;` inside `Fill`. **Verified**.
+8. Type name dropdown: shows primitive types, unit/local type names and history; no leading `type` keyword. **Verified**.
 
 ## 6. RULES
 
