@@ -122,6 +122,14 @@ object CodeExplorerView: TWKCodeExplorerView
           OnClick = OptionsSpeedButtonClick
         end
       end
+      object CodeExplorerToolbarFrame: TWKCodeExplorerToolbar
+        Left = 0
+        Height = 199
+        Top = 0
+        Width = 40
+        Align = alRight
+        TabOrder = 2
+      end
     end
     object DirectivesPage: TTabSheet
       Caption = 'DirectivesPage'
@@ -229,6 +237,13 @@ object CodeExplorerView: TWKCodeExplorerView
     Interval = 500
     OnTimer = IdleTimer1Timer
     Left = 64
+    Top = 192
+  end
+  object ToolbarUpdateTimer: TTimer
+    Enabled = True
+    Interval = 100
+    OnTimer = ToolbarUpdateTimerTimer
+    Left = 128
     Top = 192
   end
 end

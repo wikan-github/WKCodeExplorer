@@ -31,6 +31,11 @@
         <UnitName Value="WKAddLocalVariableForm"/>
       </Item>
       <Item>
+        <Filename Value="WKCodeExplorerToolbar.pas"/>
+        <Type Value="Unit"/>
+        <UnitName Value="WKCodeExplorerToolbar"/>
+      </Item>
+      <Item>
         <Filename Value="WKCodeExplOpts.pas"/>
         <Type Value="Unit"/>
         <UnitName Value="WKCodeExplOpts"/>

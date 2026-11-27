@@ -55,7 +55,8 @@ uses
   LazIDEIntf, IDECommands, MenuIntf, SrcEditorIntf, IDEDialogs, IDEImagesIntf,
   IDEWindowIntf,
   // Local plain settings class (no IDE-internal units)
-  WKCodeExplOpts, WKCopyFormat, WKPasteFormat, WKAddLocalVariableForm;
+  WKCodeExplOpts, WKCopyFormat, WKPasteFormat, WKAddLocalVariableForm,
+  WKCodeExplorerToolbar;
 
 const
   { Local copies of the IDE-only string constants.  Values are taken from
@@ -152,6 +153,7 @@ type
     MainNotebook: TPageControl;
     MenuItem1: TMenuItem;
     CodeTreeviewButtonPanel: TPanel;
+    CodeExplorerToolbarFrame: TWKCodeExplorerToolbar;
     CodeOptionsSpeedButton: TSpeedButton;
     CodeRefreshSpeedButton: TSpeedButton;
     CodeModeSpeedButton: TSpeedButton;
@@ -161,6 +163,7 @@ type
     WKCopyMenuItem: TMenuItem;
     WKPasteMenuItem: TMenuItem;
     WKDeleteMenuItem: TMenuItem;
+    ToolbarUpdateTimer: TTimer;
     procedure CodeExplorerViewCreate(Sender: TObject);
     procedure CodeExplorerViewDestroy(Sender: TObject);
     procedure CodeFilterEditChange(Sender: TObject);
@@ -190,6 +193,7 @@ type
     function WKIsMultiCopySupportedNode(ANode: TTreeNode; out AIsClass: Boolean): Boolean;
     function WKCopyEnabledForSelection: Boolean;
     procedure TreePopupmenuPopup(Sender: TObject);
+    procedure ToolbarUpdateTimerTimer(Sender: TObject);
     procedure TreeviewDblClick(Sender: TObject);
     procedure TreeviewDeletion(Sender: TObject; Node: TTreeNode);
     procedure TreeviewKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -1118,6 +1122,18 @@ begin
   WKCEShowSrcEditPosIDEMenuCommand.OnClick:=@ShowSrcEditPosMenuItemClick;
   WKCERefreshIDEMenuCommand.OnClick:=@RefreshMenuItemClick;
   WKCERenameIDEMenuCommand.OnClick:=@RenameMenuItemClick;
+
+  // Toolbar buttons forward to the same handlers as the popup items.
+  CodeExplorerToolbarFrame.BtnCopy.OnClick := @WKCopyMenuItemClick;
+  CodeExplorerToolbarFrame.BtnPaste.OnClick := @WKPasteMenuItemClick;
+  CodeExplorerToolbarFrame.BtnDelete.OnClick := @WKDeleteMenuItemClick;
+  CodeExplorerToolbarFrame.BtnRename.OnClick := @RenameMenuItemClick;
+  CodeExplorerToolbarFrame.BtnJumpTo.OnClick := @JumpToMenuItemClick;
+  CodeExplorerToolbarFrame.BtnCopy.Enabled := WKCopyMenuItem.Enabled;
+  CodeExplorerToolbarFrame.BtnPaste.Enabled := WKPasteMenuItem.Enabled;
+  CodeExplorerToolbarFrame.BtnDelete.Enabled := WKDeleteMenuItem.Enabled;
+  CodeExplorerToolbarFrame.BtnRename.Enabled := WKCERenameIDEMenuCommand.Visible;
+  CodeExplorerToolbarFrame.BtnJumpTo.Enabled := WKCEJumpToIDEMenuCommand.Visible;
 
   fNodesWithPath:=TAvlTree.Create(@CompareViewNodePathsAndParams);
 
@@ -4573,7 +4589,22 @@ begin
   // Copy: single item keeps its existing rule; multiple items require every
   // selected node to be a class or a standalone routine.
   WKCopyMenuItem.Enabled := WKCopyEnabledForSelection;
+  // Toolbar only reflects the popup item state; no new enable rules.
+  if CodeExplorerToolbarFrame <> nil then
+  begin
+    CodeExplorerToolbarFrame.BtnCopy.Enabled := WKCopyMenuItem.Enabled;
+    CodeExplorerToolbarFrame.BtnPaste.Enabled := WKPasteMenuItem.Enabled;
+    CodeExplorerToolbarFrame.BtnDelete.Enabled := WKDeleteMenuItem.Enabled;
+    CodeExplorerToolbarFrame.BtnRename.Enabled := WKCERenameIDEMenuCommand.Visible;
+    CodeExplorerToolbarFrame.BtnJumpTo.Enabled := WKCEJumpToIDEMenuCommand.Visible;
+  end;
   //DebugLn(['TWKCodeExplorerView.TreePopupmenuPopup ',WKCERenameIDEMenuCommand.Visible]);
+end;
+
+procedure TWKCodeExplorerView.ToolbarUpdateTimerTimer(Sender: TObject);
+begin
+  // Recompute the existing popup enable states and mirror them to the toolbar.
+  TreePopupmenuPopup(nil);
 end;
 
 procedure TWKCodeExplorerView.TreeviewDblClick(Sender: TObject);

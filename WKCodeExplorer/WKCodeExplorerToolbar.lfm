@@ -1,0 +1,63 @@
+object WKCodeExplorerToolbar: TWKCodeExplorerToolbar
+  Left = 0
+  Height = 199
+  Top = 0
+  Width = 40
+  ClientHeight = 199
+  ClientWidth = 40
+  LCLVersion = '5.99.0.0'
+  TabOrder = 0
+  object BtnCopy: TBitBtn
+    Left = 2
+    Height = 30
+    Hint = 'Copy selected item'
+    Top = 2
+    Width = 30
+    Margin = 1
+    ParentShowHint = False
+    ShowHint = True
+    TabOrder = 0
+  end
+  object BtnPaste: TBitBtn
+    Left = 2
+    Height = 30
+    Hint = 'Paste clipboard'
+    Top = 36
+    Width = 30
+    Margin = 1
+    ParentShowHint = False
+    ShowHint = True
+    TabOrder = 1
+  end
+  object BtnDelete: TBitBtn
+    Left = 2
+    Height = 30
+    Hint = 'Delete selected item'
+    Top = 74
+    Width = 30
+    ParentShowHint = False
+    ShowHint = True
+    TabOrder = 2
+  end
+  object BtnRename: TBitBtn
+    Left = 2
+    Height = 30
+    Hint = 'Rename selected identifier'
+    Top = 110
+    Width = 30
+    Margin = 1
+    ParentShowHint = False
+    ShowHint = True
+    TabOrder = 3
+  end
+  object BtnJumpTo: TBitBtn
+    Left = 2
+    Height = 30
+    Hint = 'Jump to source'
+    Top = 150
+    Width = 30
+    ParentShowHint = False
+    ShowHint = True
+    TabOrder = 4
+  end
+end
