@@ -785,6 +785,33 @@ begin
   end;
 end;
 
+function WKUnitNameFromSource(const Text: string): string;
+var
+  SL: TStringList;
+  I, P: Integer;
+  S: string;
+begin
+  Result := '';
+  SL := TStringList.Create;
+  try
+    SL.Text := Text;
+    for I := 0 to SL.Count - 1 do
+    begin
+      S := Trim(SL[I]);
+      if SameText(Copy(S, 1, 5), 'unit ') then
+      begin
+        S := Trim(Copy(S, 6, Length(S)));
+        P := 1;
+        while (P <= Length(S)) and WKIsIdentChar(S[P]) do Inc(P);
+        Result := Copy(S, 1, P - 1);
+        Exit;
+      end;
+    end;
+  finally
+    SL.Free;
+  end;
+end;
+
 function WKIsMultiSelectModuleCopyText(const Text: string): Boolean;
 var
   SL: TStringList;
@@ -1413,6 +1440,7 @@ const
 var
   MultiDecls: TMultiDeclArray;
   MultiBodies: TMultiBodyArray;
+  MultiSourceUnit: string;
 
   function PosToLineIndex(const S: string; P: Integer): Integer;
   var
@@ -1684,6 +1712,7 @@ var
     SortDecls;
     SortBodies;
     Result := '//MMWIN:MODULECOPY' + CRLF;
+    Result := Result + '//UNIT:' + MultiSourceUnit + CRLF;
     Result := Result + 'unit _MM_Copy_Buffer_;' + CRLF + CRLF;
     Result := Result + 'interface' + CRLF + CRLF;
 
@@ -1727,7 +1756,7 @@ var
       Result := Result + MultiBodies[I].Text + CRLF;
       FirstItem := False;
     end;
-    Result := Result + 'end.' + CRLF;
+    Result := Result + CRLF + 'end.' + CRLF;
   end;
 
 var
@@ -1892,6 +1921,7 @@ var
     CodeToolBoss.Explore(Buf, Tool, false);
     if Tool = nil then Exit;
     Src := Buf.Source;
+    MultiSourceUnit := WKUnitNameFromSource(Src);
     Lines := TStringList.Create;
     try
       Lines.Text := Src;
@@ -2774,6 +2804,18 @@ begin
 end;
 
 procedure TWKCodeExplorerView.WKPasteMenuItemClick(Sender: TObject);
+type
+  TMultiPasteItem = record
+    Name, Owner, Params, Decl, Body, Text: string;
+    SortLine, EndLine: Integer;
+    IsClass, IsClassBody, IsPublic: Boolean;
+  end;
+  TMultiPasteArray = array of TMultiPasteItem;
+  TPasteInsert = record
+    Line: Integer;
+    Text: string;
+  end;
+  TPasteInsertArray = array of TPasteInsert;
 const
   CRLF = #13#10;
 var
@@ -2882,6 +2924,573 @@ var
       T := Copy(T, 1, P - 1);
     Result := SameText(T, 'var') or SameText(T, 'const') or
       SameText(T, 'resourcestring') or SameText(T, 'threadvar');
+  end;
+
+  function IsClassDeclLine(const ALine: string; out AName: string): Boolean;
+  var
+    T, N: string;
+    P: Integer;
+  begin
+    Result := False;
+    AName := '';
+    T := Trim(ALine);
+    P := Pos(' = class', T);
+    if P <= 0 then P := Pos(' = record', T);
+    if P <= 0 then Exit;
+    N := Trim(Copy(T, 1, P - 1));
+    if N = '' then Exit;
+    AName := N;
+    Result := True;
+  end;
+
+  function ClassDeclEndLine(ALines: TStringList; StartIdx: Integer): Integer;
+  var
+    K, WantIndent: Integer;
+  begin
+    Result := -1;
+    WantIndent := LineIndent(ALines[StartIdx]);
+    for K := StartIdx + 1 to ALines.Count - 1 do
+      if SameText(Trim(ALines[K]), 'end;') and
+         (LineIndent(ALines[K]) = WantIndent) then
+        Exit(K);
+  end;
+
+  function ClipHasClasses(const AText: string): Boolean;
+  var
+    ALines: TStringList;
+    I, IfaceIdx, ImplIdx: Integer;
+    N: string;
+  begin
+    Result := False;
+    ALines := TStringList.Create;
+    try
+      ALines.Text := AText;
+      IfaceIdx := -1;
+      ImplIdx := ALines.Count;
+      for I := 0 to ALines.Count - 1 do
+      begin
+        if (IfaceIdx < 0) and SameText(Trim(ALines[I]), 'interface') then
+          IfaceIdx := I
+        else if (IfaceIdx >= 0) and SameText(Trim(ALines[I]), 'implementation') then
+        begin
+          ImplIdx := I;
+          Break;
+        end;
+      end;
+      if IfaceIdx < 0 then Exit;
+      for I := IfaceIdx + 1 to ImplIdx - 1 do
+        if IsClassDeclLine(ALines[I], N) then Exit(True);
+    finally
+      ALines.Free;
+    end;
+  end;
+
+  function ClipUnitName(const AText: string): string;
+  var
+    ALines: TStringList;
+    I: Integer;
+    T: string;
+  begin
+    Result := '';
+    ALines := TStringList.Create;
+    try
+      ALines.Text := AText;
+      for I := 0 to ALines.Count - 1 do
+      begin
+        T := Trim(ALines[I]);
+        if SameText(Copy(T, 1, 7), '//UNIT:') then
+        begin
+          Result := Trim(Copy(T, 8, Length(T)));
+          Exit;
+        end;
+        if SameText(Copy(T, 1, 5), 'unit ') then Break;
+      end;
+    finally
+      ALines.Free;
+    end;
+  end;
+
+  function ParseMultiClip(out AClipLines: TStringList; out AUnitName: string;
+    out AClasses, ARoutines, ABodies: TMultiPasteArray): Boolean;
+  var
+    IfaceIdx, ImplIdx, EndIdx, I, HE, BE, BodyStart, C, R, N, DotPos: Integer;
+    T, H, Nm, Pm, Bdy: string;
+    Skip, IsPub: Boolean;
+  begin
+    Result := False;
+    AClipLines := TStringList.Create;
+    SetLength(AClasses, 0);
+    SetLength(ARoutines, 0);
+    SetLength(ABodies, 0);
+    AUnitName := '';
+    try
+      AClipLines.Text := ClipText;
+      AUnitName := ClipUnitName(ClipText);
+      IfaceIdx := -1;
+      ImplIdx := -1;
+      EndIdx := -1;
+      for I := 0 to AClipLines.Count - 1 do
+      begin
+        T := Trim(AClipLines[I]);
+        if (IfaceIdx < 0) and SameText(T, 'interface') then
+          IfaceIdx := I
+        else if (IfaceIdx >= 0) and (ImplIdx < 0) and SameText(T, 'implementation') then
+          ImplIdx := I
+        else if SameText(T, 'end.') then
+          EndIdx := I;
+      end;
+      if (IfaceIdx < 0) or (ImplIdx <= IfaceIdx) then Exit;
+      if EndIdx < ImplIdx then EndIdx := AClipLines.Count - 1;
+
+      I := IfaceIdx + 1;
+      while I < ImplIdx do
+      begin
+        if IsClassDeclLine(AClipLines[I], Nm) then
+        begin
+          HE := ClassDeclEndLine(AClipLines, I);
+          if HE < 0 then
+          begin
+            Inc(I);
+            Continue;
+          end;
+          C := Length(AClasses);
+          SetLength(AClasses, C + 1);
+          AClasses[C].Name := Nm;
+          AClasses[C].SortLine := I;
+          AClasses[C].EndLine := HE;
+          AClasses[C].IsClass := True;
+          if (I > IfaceIdx) and (Pos('{ ' + Nm + ' }', AClipLines[I - 1]) > 0) then
+            AClasses[C].Text := WKJoinLineRange(AClipLines, I - 1, HE)
+          else
+            AClasses[C].Text := WKJoinLineRange(AClipLines, I, HE);
+          I := HE + 1;
+          Continue;
+        end;
+        Inc(I);
+      end;
+
+      I := IfaceIdx + 1;
+      while I < ImplIdx do
+      begin
+        Skip := False;
+        for C := 0 to High(AClasses) do
+          if (I >= AClasses[C].SortLine) and (I <= AClasses[C].EndLine) then
+          begin
+            Skip := True;
+            Break;
+          end;
+        if Skip then
+        begin
+          Inc(I);
+          Continue;
+        end;
+        if LineIndent(AClipLines[I]) <> 0 then
+        begin
+          Inc(I);
+          Continue;
+        end;
+        if WKRoutineKeywordLenAt(AClipLines[I], 1) = 0 then
+        begin
+          Inc(I);
+          Continue;
+        end;
+        HE := WKHeaderEndLine(AClipLines, I);
+        if HE > ImplIdx then HE := ImplIdx - 1;
+        H := WKJoinLineRange(AClipLines, I, HE);
+        Nm := WKHeaderName(H);
+        Pm := WKNormHeaderTail(H);
+        if (Nm = '') or (Pos('.', Nm) > 0) then
+        begin
+          I := HE + 1;
+          Continue;
+        end;
+        R := Length(ARoutines);
+        SetLength(ARoutines, R + 1);
+        ARoutines[R].Name := Nm;
+        ARoutines[R].Params := Pm;
+        ARoutines[R].Decl := H;
+        ARoutines[R].IsPublic := True;
+        ARoutines[R].SortLine := I;
+        BE := WKFindRoutineHeader(AClipLines, ImplIdx + 1, EndIdx, Nm, Pm, True, False);
+        if BE >= 0 then
+        begin
+          BodyStart := BE;
+          BE := WKFindRoutineEndLine(AClipLines, BodyStart);
+          if BE > EndIdx then BE := EndIdx;
+          if BE < BodyStart then BE := BodyStart;
+          ARoutines[R].Body := WKJoinLineRange(AClipLines, BodyStart, BE);
+        end;
+        I := HE + 1;
+      end;
+
+      I := ImplIdx + 1;
+      while I <= EndIdx do
+      begin
+        if LineIndent(AClipLines[I]) <> 0 then
+        begin
+          Inc(I);
+          Continue;
+        end;
+        if WKRoutineKeywordLenAt(AClipLines[I], 1) = 0 then
+        begin
+          Inc(I);
+          Continue;
+        end;
+        HE := WKHeaderEndLine(AClipLines, I);
+        if HE > EndIdx then HE := EndIdx;
+        H := WKJoinLineRange(AClipLines, I, HE);
+        Nm := WKHeaderName(H);
+        Pm := WKNormHeaderTail(H);
+        BE := WKFindRoutineEndLine(AClipLines, I);
+        if BE < HE then BE := HE;
+        if BE > EndIdx then BE := EndIdx;
+        Bdy := WKJoinLineRange(AClipLines, I, BE);
+        N := Length(ABodies);
+        SetLength(ABodies, N + 1);
+        ABodies[N].Name := Nm;
+        ABodies[N].Params := Pm;
+        ABodies[N].Body := Bdy;
+        ABodies[N].Text := Bdy;
+        ABodies[N].SortLine := I;
+        DotPos := Pos('.', Nm);
+        if DotPos > 0 then
+        begin
+          ABodies[N].Owner := Copy(Nm, 1, DotPos - 1);
+          ABodies[N].Name := Copy(Nm, DotPos + 1, Length(Nm));
+          ABodies[N].IsClassBody := True;
+        end
+        else
+        begin
+          IsPub := False;
+          for R := 0 to High(ARoutines) do
+            if SameText(ARoutines[R].Name, Nm) and (ARoutines[R].Params = Pm) then
+            begin
+              IsPub := True;
+              Break;
+            end;
+          ABodies[N].IsPublic := IsPub;
+        end;
+        I := BE + 1;
+      end;
+      Result := True;
+    finally
+      if not Result then AClipLines.Free;
+    end;
+  end;
+
+  function CurrentPasteClassOwner: string;
+  var
+    TV: TCustomTreeView;
+    Item: TTreeNode;
+    ND: TViewNodeData;
+    CTN: TCodeTreeNode;
+    Buf: TCodeBuffer;
+    Tool: TCodeTool;
+  begin
+    Result := '';
+    TV := GetCurrentTreeView;
+    if TV = nil then Exit;
+    if tvoAllowMultiselect in TV.Options then
+      Item := TV.GetFirstMultiSelected
+    else
+      Item := TV.Selected;
+    if Item = nil then Exit;
+    ND := TViewNodeData(Item.Data);
+    if (ND = nil) or (ND.Desc <> ctnTypeDefinition) then Exit;
+    CTN := FindClassCTNode(ND);
+    if CTN = nil then Exit;
+    Buf := CodeToolBoss.LoadFile(CodeFilename, false, false);
+    if Buf <> nil then
+    begin
+      Tool := nil;
+      CodeToolBoss.Explore(Buf, Tool, false);
+      if Tool <> nil then Result := Tool.ExtractDefinitionName(CTN);
+    end;
+    if Result = '' then Result := Item.Text;
+  end;
+
+  procedure AddPasteInsert(var AInserts: TPasteInsertArray;
+    ALine: Integer; const AText: string);
+  var
+    N, K: Integer;
+  begin
+    if AText = '' then Exit;
+    for K := 0 to High(AInserts) do
+      if AInserts[K].Line = ALine then
+      begin
+        AInserts[K].Text := AInserts[K].Text + CRLF + AText;
+        Exit;
+      end;
+    N := Length(AInserts);
+    SetLength(AInserts, N + 1);
+    AInserts[N].Line := ALine;
+    AInserts[N].Text := AText;
+  end;
+
+  procedure ApplyPasteInserts(var AInserts: TPasteInsertArray);
+  var
+    A, B: Integer;
+    Tmp: TPasteInsert;
+  begin
+    for A := 0 to High(AInserts) - 1 do
+      for B := A + 1 to High(AInserts) do
+        if AInserts[B].Line > AInserts[A].Line then
+        begin
+          Tmp := AInserts[A];
+          AInserts[A] := AInserts[B];
+          AInserts[B] := Tmp;
+        end;
+    for A := 0 to High(AInserts) do
+      InsertAtLine(AInserts[A].Line, AInserts[A].Text);
+  end;
+
+  procedure ReplaceEditorLine(ALine: Integer; const AText: string);
+  begin
+    if (ALine < 1) or (ALine > Syn.Lines.Count) then Exit;
+    Syn.BlockBegin := Point(1, ALine);
+    Syn.BlockEnd := Point(Length(Syn.Lines[ALine - 1]) + 1, ALine);
+    Syn.SelText := AText;
+  end;
+
+  function TextHasUnit(const AText, AUnit: string): Boolean;
+  var
+    P, E: Integer;
+    Token: string;
+  begin
+    Result := False;
+    P := 1;
+    while P <= Length(AText) do
+    begin
+      if WKIsIdentChar(AText[P]) then
+      begin
+        E := P;
+        while (E <= Length(AText)) and WKIsIdentChar(AText[E]) do Inc(E);
+        Token := Copy(AText, P, E - P);
+        if SameText(Token, AUnit) then Exit(True);
+        P := E;
+      end
+      else
+        Inc(P);
+    end;
+  end;
+
+  function DestinationHasType(ALines: TStringList; const AName: string): Boolean;
+  var
+    K: Integer;
+    UName, ULine: string;
+  begin
+    Result := False;
+    UName := UpperCase(AName);
+    for K := 0 to ALines.Count - 1 do
+    begin
+      ULine := UpperCase(ALines[K]);
+      if (Pos(UName + ' = CLASS', ULine) > 0) or
+         (Pos(UName + ' = RECORD', ULine) > 0) then Exit(True);
+    end;
+  end;
+
+  function DestinationHasRoutine(ALines: TStringList; const AOwner, AName,
+    AParams: string; AImplLine: Integer): Boolean;
+  begin
+    Result := False;
+    if AOwner <> '' then
+    begin
+      Result := WKFindRoutineHeader(ALines, 0, ALines.Count - 1,
+        AOwner + '.' + AName, AParams, True, True) >= 0;
+      Exit;
+    end;
+    Result :=
+      (WKFindRoutineHeader(ALines, 0, AImplLine - 1, AName, AParams,
+         True, False) >= 0) or
+      (WKFindRoutineHeader(ALines, AImplLine, ALines.Count - 1, AName, AParams,
+         True, False) >= 0);
+  end;
+
+  procedure PasteMultiModule;
+  var
+    ClipLines, ALines: TStringList;
+    Classes, Routines, Bodies: TMultiPasteArray;
+    Inserts: TPasteInsertArray;
+    UnitName, ClassText, DeclText, BodyText, T, NewUsesText, UsesNewLine: string;
+    SkippedText, HeaderText: string;
+    IfaceIdx, ImplIdx, EndIdx, TypeInsertLine, DeclInsertLine, BodyInsertLine: Integer;
+    UsesStartIdx, UsesSemiIdx, UsesReplaceLine, K, C, R, B, P, Q: Integer;
+    IsDup: Boolean;
+  begin
+    if not ParseMultiClip(ClipLines, UnitName, Classes, Routines, Bodies) then Exit;
+    try
+      EditorText := Syn.Text;
+      ALines := TStringList.Create;
+      try
+        ALines.Text := EditorText;
+        IfaceIdx := -1;
+        ImplIdx := -1;
+        EndIdx := -1;
+        for K := 0 to ALines.Count - 1 do
+        begin
+          T := Trim(ALines[K]);
+          if (IfaceIdx < 0) and SameText(T, 'interface') then IfaceIdx := K
+          else if (IfaceIdx >= 0) and (ImplIdx < 0) and SameText(T, 'implementation') then ImplIdx := K
+          else if SameText(T, 'end.') then EndIdx := K;
+        end;
+        if (IfaceIdx < 0) or (ImplIdx <= IfaceIdx) or (EndIdx < ImplIdx) then Exit;
+
+        DeclInsertLine := ImplIdx + 1;
+        BodyInsertLine := EndIdx + 1;
+        TypeInsertLine := ImplIdx + 1;
+        for K := IfaceIdx + 1 to ImplIdx - 1 do
+          if IsSectionLine(ALines[K]) then
+          begin
+            TypeInsertLine := K + 1;
+            Break;
+          end;
+
+        SetLength(Inserts, 0);
+        SkippedText := '';
+        UsesReplaceLine := 0;
+        UsesNewLine := '';
+        if UnitName <> '' then
+        begin
+          UsesStartIdx := -1;
+          UsesSemiIdx := -1;
+          for K := IfaceIdx + 1 to ImplIdx - 1 do
+          begin
+            T := Trim(ALines[K]);
+            if SameText(Copy(T, 1, 5), 'uses ') or SameText(T, 'uses') then
+            begin
+              UsesStartIdx := K;
+              UsesSemiIdx := K;
+              while (UsesSemiIdx <= ImplIdx - 1) and
+                    (Pos(';', ALines[UsesSemiIdx]) = 0) do Inc(UsesSemiIdx);
+              if UsesSemiIdx > ImplIdx - 1 then
+              begin
+                UsesStartIdx := -1;
+                UsesSemiIdx := -1;
+              end;
+              Break;
+            end;
+          end;
+          if UsesStartIdx >= 0 then
+          begin
+            NewUsesText := '';
+            for K := UsesStartIdx to UsesSemiIdx do
+            begin
+              if NewUsesText = '' then NewUsesText := ALines[K]
+              else NewUsesText := NewUsesText + CRLF + ALines[K];
+            end;
+            if not TextHasUnit(NewUsesText, UnitName) then
+            begin
+              T := ALines[UsesSemiIdx];
+              P := 0;
+              for Q := Length(T) downto 1 do
+                if T[Q] = ';' then
+                begin
+                  P := Q;
+                  Break;
+                end;
+              if P > 0 then
+              begin
+                Insert(', ' + UnitName, T, P);
+                UsesReplaceLine := UsesSemiIdx + 1;
+                UsesNewLine := T;
+              end;
+            end;
+          end
+          else
+            AddPasteInsert(Inserts, IfaceIdx + 2, 'uses ' + UnitName + ';');
+        end;
+
+        ClassText := '';
+        for C := 0 to High(Classes) do
+        begin
+          if DestinationHasType(ALines, Classes[C].Name) then
+          begin
+            if SkippedText <> '' then SkippedText := SkippedText + ', ';
+            SkippedText := SkippedText + Classes[C].Name;
+            Continue;
+          end;
+          if ClassText <> '' then ClassText := ClassText + CRLF + CRLF;
+          ClassText := ClassText + Classes[C].Text;
+        end;
+        if ClassText <> '' then
+          AddPasteInsert(Inserts, TypeInsertLine, 'type' + CRLF + ClassText + CRLF);
+
+        DeclText := '';
+        for R := 0 to High(Routines) do
+        begin
+          if DestinationHasRoutine(ALines, '', Routines[R].Name,
+             Routines[R].Params, DeclInsertLine) then
+          begin
+            if SkippedText <> '' then SkippedText := SkippedText + ', ';
+            SkippedText := SkippedText + Routines[R].Name;
+            Continue;
+          end;
+          DeclText := DeclText + WKWithTrailingBlankLine(Routines[R].Decl);
+        end;
+        if DeclText <> '' then AddPasteInsert(Inserts, DeclInsertLine, DeclText);
+
+        BodyText := '';
+        for B := 0 to High(Bodies) do
+        begin
+          IsDup := False;
+          if Bodies[B].IsClassBody then
+          begin
+            for C := 0 to High(Classes) do
+              if SameText(Classes[C].Name, Bodies[B].Owner) and
+                 DestinationHasType(ALines, Classes[C].Name) then
+                IsDup := True;
+            if not IsDup then
+              IsDup := DestinationHasRoutine(ALines, Bodies[B].Owner,
+                Bodies[B].Name, Bodies[B].Params, DeclInsertLine);
+          end
+          else if Bodies[B].IsPublic then
+          begin
+            for R := 0 to High(Routines) do
+              if SameText(Routines[R].Name, Bodies[B].Name) and
+                 (Routines[R].Params = Bodies[B].Params) and
+                 DestinationHasRoutine(ALines, '', Routines[R].Name,
+                   Routines[R].Params, DeclInsertLine) then
+                IsDup := True;
+          end
+          else
+            IsDup := DestinationHasRoutine(ALines, '', Bodies[B].Name,
+              Bodies[B].Params, DeclInsertLine);
+          if IsDup then
+          begin
+            HeaderText := Bodies[B].Name;
+            if Bodies[B].Owner <> '' then HeaderText := Bodies[B].Owner + '.' + HeaderText;
+            if SkippedText <> '' then SkippedText := SkippedText + ', ';
+            SkippedText := SkippedText + HeaderText;
+            Continue;
+          end;
+          BodyText := BodyText + WKWithTrailingBlankLine(Bodies[B].Body);
+        end;
+        if BodyText <> '' then AddPasteInsert(Inserts, BodyInsertLine, BodyText);
+
+        SavedCaret := Syn.CaretXY;
+        SavedTopLine := Syn.TopLine;
+        InsertedLinesAbove := 0;
+        Syn.BeginUpdate;
+        try
+          if UsesReplaceLine > 0 then
+            ReplaceEditorLine(UsesReplaceLine, UsesNewLine);
+          ApplyPasteInserts(Inserts);
+        finally
+          Syn.EndUpdate;
+        end;
+        Syn.CaretXY := Point(SavedCaret.X, SavedCaret.Y + InsertedLinesAbove);
+        Syn.TopLine := SavedTopLine;
+        if SkippedText <> '' then
+          Msg := 'Skipped duplicates: ' + SkippedText
+        else
+          Msg := 'Pasted multi-select block';
+        MessageDlg(Msg, mtInformation, [mbOK], 0);
+      finally
+        ALines.Free;
+      end;
+    finally
+      ClipLines.Free;
+    end;
   end;
 
   // //MMWIN:MODULECOPY: paste a standalone routine. A selected class node
@@ -3105,8 +3714,17 @@ begin
   begin
     if WKIsMultiSelectModuleCopyText(ClipText) then
     begin
-      MessageDlg('Multi-select paste is not implemented yet',
-        mtInformation, [mbOK], 0);
+      if CurrentPasteClassOwner <> '' then
+      begin
+        if ClipHasClasses(ClipText) then
+          MessageDlg('no procedures found to convert the method',
+            mtInformation, [mbOK], 0)
+        else
+          MessageDlg('Multi-select paste is not implemented yet',
+            mtInformation, [mbOK], 0);
+        Exit;
+      end;
+      PasteMultiModule;
       Exit;
     end;
     PasteStandaloneRoutine;
