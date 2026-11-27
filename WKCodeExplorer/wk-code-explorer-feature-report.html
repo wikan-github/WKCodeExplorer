@@ -207,7 +207,24 @@
     </tbody>
   </table>
 
-  <h2>6. Unimplemented features</h2>
+  <h2>6. Toolbar</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Icon-only toolbar on the right side of the tree</td>
+        <td>A vertical frame with five <code>TBitBtn</code> buttons: Copy, Paste, Delete, Rename and Jump to. Icons come from the IDE image list (<code>laz_copy</code>, <code>laz_paste</code>, <code>laz_delete</code>, <code>item_rename</code>, <code>menu_jumpto_section</code>); no image files were added.</td>
+        <td class="status-done">Implemented</td>
+      </tr>
+      <tr>
+        <td>Button behaviour and enable state</td>
+        <td>Each button forwards to the same handler as its popup item. A 100 ms <code>TTimer</code> calls the existing <code>TreePopupmenuPopup</code> state computation, so buttons are enabled/disabled on selection without right-click. Popup logic and enable rules are unchanged.</td>
+        <td class="status-done">Implemented</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>7. Unimplemented features</h2>
   <table>
     <thead>
       <tr>
@@ -218,24 +235,19 @@
     </thead>
     <tbody>
       <tr>
-        <td>Toolbar for WK Code Explorer actions: a toolbar below the filter box with buttons for Copy, Paste, Delete, Rename and Jump to. Each button uses the same enable rule and handler as its popup item, so a button is greyed out when the action does not apply, and no right-click is needed.</td>
+        <td>Variables, constants and non-class types: copy and paste into <code>interface</code></td>
         <td class="status-not">Not implemented</td>
         <td>Prime feature 1</td>
       </tr>
       <tr>
-        <td>Variables, constants and non-class types: copy and paste into <code>interface</code></td>
+        <td>Enums and other non-class types (<code>//MMWIN:TYPESCOPY</code>)</td>
         <td class="status-not">Not implemented</td>
         <td>Prime feature 2</td>
       </tr>
       <tr>
-        <td>Enums and other non-class types (<code>//MMWIN:TYPESCOPY</code>)</td>
-        <td class="status-not">Not implemented</td>
-        <td>Prime feature 3</td>
-      </tr>
-      <tr>
         <td>Delete Recovery (JSON log in <code>.wkdeleted/</code>)</td>
         <td class="status-not">Not implemented</td>
-        <td>Prime feature 4</td>
+        <td>Prime feature 3</td>
       </tr>
       <tr>
         <td>Expanded branches restored after Delete and Paste</td>

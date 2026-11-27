@@ -1,21 +1,14 @@
 # WK Code Explorer — handoff
 
-Test programs (`PasteFormatTest.pas`, `CopyFormatTest.pas`) live in `~/projects/WKCopyPasteTest/`, outside the repo. `tests/TestVisibility.pas` is tracked in this repo but has pre-existing local edits.
+Test programs (`PasteFormatTest.pas`, `CopyFormatTest.pas`) live in `~/projects/WKCopyPasteTest/`, outside the repo. `tests/TestVisibility.pas` is tracked in this repo and committed.
 
 ## Git state
 
-The WKCodeExplorer feature work and this handoff are committed on `mmx-codeexplorer`. The branch is ahead of `origin/mmx-codeexplorer`; nothing has been pushed.
+The WKCodeExplorer feature work and this handoff are committed on `mmx-codeexplorer`. The toolbar commit `f013460 add toolbar feature` is committed locally; the user will push it.
 
-Local files left out of commits:
+Before this handoff update, the working tree was clean (`git status --short -uall` returned no output).
 
-```
-$ git status --short -uall
- M tests/TestVisibility.pas
-?? codetoolbarexplorer.lps
-?? files.zip
-```
-
-Latest feature commit: `0f3bf6d Add designer dialog for Ctrl+L local variables and clean type suggestions`.
+Latest feature commit: `f013460 add toolbar feature`.
 
 ## 1. STATUS
 
@@ -57,6 +50,11 @@ Only features verified in the IDE are listed below.
 - Tree refreshes after Delete and Paste (forced refresh that bypasses the tree-focus check).
 - Expanded branches after refresh are NOT restored automatically (enhancement).
 
+### Toolbar — implemented
+- A vertical frame on the right side of the tree with five icon-only `TBitBtn` buttons: Copy, Paste, Delete, Rename and Jump to. Each forwards to the same handler as its popup item.
+- Buttons use standard IDE image names (`laz_copy`, `laz_paste`, `laz_delete`, `item_rename`, `menu_jumpto_section`) via `IDEImages.AssignImage`; no image files were added.
+- A 100 ms `TTimer` calls the existing `TreePopupmenuPopup` state computation so button enable states update on selection without right-click. No popup logic or enable rule was changed.
+
 ### Ctrl+L Add local variable — verified in the IDE
 - The dialog opens with Ctrl+L (after removing the Lazarus alternate binding).
 - `THuman.Walk` with no var creates `var` above `begin` with the declaration under it.
@@ -71,14 +69,16 @@ Only features verified in the IDE are listed below.
 
 ## 2. FILES CHANGED
 
-- `WKCodeExplorer/WKCodeExplorer.pas` — committed in `0f3bf6d`: Delete for classes/members/standalone routines/module vars-consts, implementation-section class delete fix, default source-order view, forced refresh after Delete/Paste, Ctrl+L Add local variable command (`WKAddLocalVariableExecute`, `WKFindRoutineBodyBounds`, `WKIsAlreadyDeclared`, prompt/validation helpers), nested routine var insertion, and type-name collection that strips a leading `type` keyword.
+- `WKCodeExplorer/WKCodeExplorer.pas` — committed in `0f3bf6d`: Delete for classes/members/standalone routines/module vars-consts, implementation-section class delete fix, default source-order view, forced refresh after Delete/Paste, Ctrl+L Add local variable command (`WKAddLocalVariableExecute`, `WKFindRoutineBodyBounds`, `WKIsAlreadyDeclared`, prompt/validation helpers), nested routine var insertion, and type-name collection that strips a leading `type` keyword. Committed in `f013460`: toolbar frame field, button OnClick wiring and the `ToolbarUpdateTimer` handler.
 - `WKCodeExplorer/WKAddLocalVariableForm.pas` / `.lfm` — new designer form for Ctrl+L (Type name, History, `Edit...`). Committed in `0f3bf6d`; the `.lfm` uses numeric `ModalResult` values (`1` / `2`). User reported that a package reinstall was required before the rebuilt form resource was loaded.
 - `WKCodeExplorer/WKCopyFormat.pas` — helper for building `CLASSCOPY` clipboard text (committed earlier).
 - `WKCodeExplorer/WKPasteFormat.pas` — clipboard parsing, whole-identifier renaming, and class-declaration/routine extraction helpers for paste (committed earlier).
-- `WKCodeExplorer/WKCodeExplorer.lpk` — package file list includes copy/paste units and the new Ctrl+L form files (committed in `0f3bf6d`).
-- `WKCodeExplorer/WKCodeExplorerRegister.pas` — registration/unit wiring updates for the package, including `WKAddLocalVariableForm` (committed in `0f3bf6d`).
+- `WKCodeExplorer/WKCodeExplorer.lpk` — package file list includes copy/paste units, the new Ctrl+L form files (committed in `0f3bf6d`) and `WKCodeExplorerToolbar.pas` (committed in `f013460`).
+- `WKCodeExplorer/WKCodeExplorerToolbar.pas` / `.lfm` — new designer frame with five icon-only `TBitBtn` buttons (committed in `f013460`).
+- `WKCodeExplorer/WKCodeExplorer.lfm` — frame placement on the right side of the tree and the `ToolbarUpdateTimer` (committed in `f013460`).
+- `WKCodeExplorer/WKCodeExplorerRegister.pas` — registration/unit wiring updates for the package, including `WKAddLocalVariableForm` (committed in `0f3bf6d`) and `WKCodeExplorerToolbar` (committed in `f013460`).
 - `docs/HANDOFF-WK-CODEEXPLORER.md` — updated to reflect verified nested-routine Ctrl+L and all Type name / History checks.
-- `tests/TestVisibility.pas` — pre-existing local worktree edits; not part of any commit.
+- `tests/TestVisibility.pas` — test unit, committed in `0621bbc`.
 
 ## 3. KNOWN ISSUES / LIMITS
 
@@ -97,17 +97,14 @@ Only features verified in the IDE are listed below.
 - `WKIsAlreadyDeclared` is a best-effort heuristic.
 - Undo: each paste or delete is one undo step; Ctrl+Z does not step back through earlier operations (same as the Delphi editor).
 - The build reports a note for `WKAddLocalVariableCmd` (assigned but never used).
-- `tests/TestVisibility.pas` has uncommitted local edits; not part of any commit.
+- Toolbar button enable states are refreshed by a 100 ms timer; this adds a small constant timer load.
 
 ## 4. NEXT STEPS
 
 Prime features:
-1. Toolbar for WK Code Explorer actions: a toolbar below the filter box with buttons for Copy, Paste, Delete,
-   Rename and Jump to. Each button uses the same enable rule and handler as its popup item, so a button is
-   greyed out when the action does not apply, and no right-click is needed.
-2. Variables, constants and non-class types: copy and paste into interface.
-3. Enums and other non-class types (//MMWIN:TYPESCOPY).
-4. Delete Recovery: JSON log in .wkdeleted/, created automatically, refuse if it cannot be written.
+1. Variables, constants and non-class types: copy and paste into interface.
+2. Enums and other non-class types (//MMWIN:TYPESCOPY).
+3. Delete Recovery: JSON log in .wkdeleted/, created automatically, refuse if it cannot be written.
 
 Enhancements:
 - Expanded branches restored after Delete and Paste (manual Refresh keeps them).
@@ -153,6 +150,13 @@ Enhancements:
 1. Source order is default view; category toggle works.
 2. After Delete/Paste, tree refreshes (forced refresh bypasses tree-focus check).
 3. Expanded branches after refresh: NOT restored automatically (known enhancement).
+
+### Toolbar (implemented)
+
+1. The vertical icon-only toolbar appears on the right side of the tree with five buttons: Copy, Paste, Delete,
+   Rename and Jump to.
+2. Selecting a node updates the button enabled states without right-click (100 ms timer).
+3. Each button forwards to the same handler as its popup item.
 
 ### Ctrl+L Add local variable (verified)
 
