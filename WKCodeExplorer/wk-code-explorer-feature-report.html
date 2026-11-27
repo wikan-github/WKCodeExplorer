@@ -164,7 +164,7 @@
       </tr>
       <tr>
         <td>Insertion</td>
-        <td>Routine with a var section: new declaration is the first line under <code>var</code>, indented two spaces. Routine without one: <code>var</code> is created above <code>begin</code>. Nested routine: declaration goes to the enclosing routine's own var section. Outer body below nested routines works.</td>
+        <td>Routine with a var section: new declaration is the first line under <code>var</code>, indented two spaces. Routine without one: <code>var</code> is created above <code>begin</code>. A name typed in a nested routine's own var section (<code>Fill</code>, <code>yy</code>) creates <code>var yy: Integer;</code> inside <code>Fill</code>. Outer body below nested routines works.</td>
         <td class="ok">Verified in IDE</td>
       </tr>
       <tr>
@@ -174,7 +174,7 @@
       </tr>
       <tr>
         <td>Type name list</td>
-        <td>Primitive types, unit-level types and current-routine local types. Filters as you type (case-insensitive). Inline <code>type T = ...</code> suggests <code>T</code>. Class members do not appear.</td>
+        <td>Primitive types, unit-level types, current-routine local types and stored History entries (in the separate History combo). Filters as you type (case-insensitive). Inline <code>type T = ...</code> suggests <code>T</code>. Class members do not appear.</td>
         <td class="ok">Verified in IDE</td>
       </tr>
       <tr>
@@ -218,34 +218,24 @@
     </thead>
     <tbody>
       <tr>
+        <td>Toolbar for WK Code Explorer actions: a toolbar below the filter box with buttons for Copy, Paste, Delete, Rename and Jump to. Each button uses the same enable rule and handler as its popup item, so a button is greyed out when the action does not apply, and no right-click is needed.</td>
+        <td class="status-not">Not implemented</td>
+        <td>Prime feature 1</td>
+      </tr>
+      <tr>
         <td>Variables, constants and non-class types: copy and paste into <code>interface</code></td>
         <td class="status-not">Not implemented</td>
-        <td>Next in the todo list</td>
+        <td>Prime feature 2</td>
       </tr>
       <tr>
         <td>Enums and other non-class types (<code>//MMWIN:TYPESCOPY</code>)</td>
         <td class="status-not">Not implemented</td>
-        <td>After variables and constants</td>
+        <td>Prime feature 3</td>
       </tr>
       <tr>
         <td>Delete Recovery (JSON log in <code>.wkdeleted/</code>)</td>
         <td class="status-not">Not implemented</td>
-        <td>Enhancement</td>
-      </tr>
-      <tr>
-        <td>Delete Recovery viewer and restore</td>
-        <td class="status-not">Not implemented</td>
-        <td>Enhancement</td>
-      </tr>
-      <tr>
-        <td>Ctrl+L Type name list: primitive types, unit types, history</td>
-        <td class="status-done">Done</td>
-        <td>Verified in the IDE</td>
-      </tr>
-      <tr>
-        <td>Ctrl+L nested routine var section (<code>Fill</code>)</td>
-        <td class="status-done">Done</td>
-        <td>Verified in the IDE</td>
+        <td>Prime feature 4</td>
       </tr>
       <tr>
         <td>Expanded branches restored after Delete and Paste</td>
@@ -276,16 +266,6 @@
         <td>Routine-into-class paste, check (e): Ctrl+Z after paste</td>
         <td class="status-verify">Not verified</td>
         <td>Checks (a) to (d) passed</td>
-      </tr>
-      <tr>
-        <td>Remove unused local variables in <code>WKAddLocalVariableExecute</code></td>
-        <td class="status-not">Not implemented</td>
-        <td>Build notes only</td>
-      </tr>
-      <tr>
-        <td>Optional push of <code>mmx-explorer-m1</code> and <code>mmx-explorer-m2</code></td>
-        <td class="status-na">Not needed</td>
-        <td>Branches are merged; m1 and m2 deletion is in progress</td>
       </tr>
     </tbody>
   </table>

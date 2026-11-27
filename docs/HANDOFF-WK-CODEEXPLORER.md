@@ -101,11 +101,21 @@ Only features verified in the IDE are listed below.
 
 ## 4. NEXT STEPS
 
-1. Multi-select copy and paste (`MODULECOPY` from the bottom member list, in source order).
+Prime features:
+1. Toolbar for WK Code Explorer actions: a toolbar below the filter box with buttons for Copy, Paste, Delete,
+   Rename and Jump to. Each button uses the same enable rule and handler as its popup item, so a button is
+   greyed out when the action does not apply, and no right-click is needed.
 2. Variables, constants and non-class types: copy and paste into interface.
-3. Enums and other non-class types (`//MMWIN:TYPESCOPY`).
-4. Delete Recovery (JSON log in `.wkdeleted/`, created automatically, refuse if it cannot be written).
-5. Enhancements: expanded branches after refresh; duplicate paste renames (`_1`, `_2`); blank-line spacing after each paste; warn-first scan for undeclared identifiers; optional push of `mmx-explorer-m1` and `mmx-explorer-m2`.
+3. Enums and other non-class types (//MMWIN:TYPESCOPY).
+4. Delete Recovery: JSON log in .wkdeleted/, created automatically, refuse if it cannot be written.
+
+Enhancements:
+- Expanded branches restored after Delete and Paste (manual Refresh keeps them).
+- Duplicate routine paste renames (_1, _2) instead of skipping.
+- Blank-line spacing after each paste.
+- Warn-first scan for undeclared identifiers in a pasted body.
+- Substring match in FindClassDeclRange (copy path): THuman could match XTHuman; Delete already uses the whole-name match.
+- Check (e) for routine-into-class paste: Ctrl+Z after paste, not yet verified.
 
 ## 5. TEST PROCEDURE
 
