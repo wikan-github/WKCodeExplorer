@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WK Code Explorer: Feature Report</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 2em; color: #222; }
+    h1 { font-size: 1.6em; color: #1f3b5a; }
+    h2 { font-size: 1.15em; margin-top: 1.8em; color: #1f3b5a; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1em; }
+    th, td { border: 1px solid #bbb; padding: 0.6em; text-align: left; vertical-align: top; }
+    th { background: #eef2f7; }
+    tr:nth-child(even) td { background: #fafafa; }
+    .ok { color: #286a2b; font-weight: bold; }
+    .partial { color: #8a6d00; font-weight: bold; }
+    .status-not { color: #a33; font-weight: bold; }
+    .status-done { color: #286a2b; font-weight: bold; }
+    .status-verify { color: #8a6d00; font-weight: bold; }
+    .status-na { color: #555; font-weight: bold; }
+    code { background: #f1f1f1; padding: 0 0.2em; }
+  </style>
+</head>
+<body>
+  <h1>WK Code Explorer: Feature Report</h1>
+  <p>Implemented features with their behaviour, followed by the features still to do.</p>
+
+  
+
+  <h2>1. Copy</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Copy a class (single)</td>
+        <td>Builds <code>//MMWIN:CLASSCOPY</code> text: a <code>//UNIT:</code> header with the source unit, a unit wrapper, the type block with the <code>{ Name }</code> comment, and all method bodies including <code>class procedure</code>, <code>class function</code>, <code>destructor</code>.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Copy a member (method or property)</td>
+        <td>Builds <code>//MMWIN:MEMBERSCOPY</code> text. Works from the Interface node and the Implementation node, with the same output.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Copy a standalone routine (single)</td>
+        <td>Builds <code>//MMWIN:MODULECOPY</code>: public routines carry their declaration and body, private routines carry the body only. Overloads each keep their own declaration. Nested routines are copied with their parent.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Copy a nested routine on its own</td>
+        <td>Copies only that routine (<code>PROCEDURECOPY</code>).</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Multi-select copy (Ctrl-click, Shift-click)</td>
+        <td>One <code>//MMWIN:MODULECOPY</code> block with <code>//UNIT:</code>, classes and standalone routines in source order. Class bodies are matched by qualified header. Block ends with a blank line and <code>end.</code>.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. Paste</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Paste a single class into a unit</td>
+        <td>Class goes inside the existing interface type block (type line added only when the unit has none). <code>{$M+}</code> added when the class has a published section. Existing name is renamed (<code>THuman_1</code>, <code>THuman_2</code>). Bodies go to implementation.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Paste a single class into a selected class</td>
+        <td>Same as the unit paste: the class is a new declaration in the existing type block. The source unit is added once to <code>uses</code>; no change if the clip has no <code>//UNIT:</code> line. Class-qualified bodies are pasted.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Paste a single member into a class</td>
+        <td>Member goes under its original visibility. A nested routine becomes a private method. Repeated paste shows "Routine already exists".</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Paste a member with no class selected (Module)</td>
+        <td>Becomes a private standalone routine in implementation, with the <code>TOld.</code> prefix removed from the header.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Paste a standalone routine (single) into the Module</td>
+        <td>Public routine: declaration in interface, body in implementation. Private routine: body only.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Paste a standalone routine into a class</td>
+        <td>Becomes a method of the class. Visibility follows the copied item.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Overloaded routine paste</td>
+        <td>Each overload keeps its own declaration and <code>overload;</code> directive.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Multi-select paste into the Module</td>
+        <td>Classes go into a new type block in interface (type line added). Source unit added once to <code>uses</code>. Declarations go to interface, bodies to implementation. Duplicates are skipped with a message naming them. Single Ctrl+Z undoes the whole paste.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Multi-select paste into a class: block with classes</td>
+        <td>Refused with the message "no procedures found to convert the method"; nothing changes.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Multi-select paste into a class: routines only</td>
+        <td>Each routine becomes a method, in clip order (no sorting). Overloads kept. Appended after the existing methods in the matching section. Duplicates are skipped with a message.</td>
+        <td class="partial">Checks (a) to (d) verified; Ctrl+Z check not yet verified</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Delete</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Delete a class (interface or implementation section)</td>
+        <td>Removes the declaration and its method bodies. The <code>{ Name }</code> comment and empty visibility labels are kept. One Ctrl+Z restores it.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Delete a method from the Interface or Implementation node</td>
+        <td>Interface node: removes the declaration and body. Implementation node: removes the body and its declaration. Overloads: only the selected one.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Delete a standalone routine</td>
+        <td>Public routine: declaration and body. Private routine: body only.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Delete a module variable or constant</td>
+        <td>Removes only that line.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Delete disabled cases</td>
+        <td>Non-class types, nested routines and local variables are not offered.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Confirmation and cancel</td>
+        <td>One generic Yes/No dialog before any change. Cancel leaves the source unchanged.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. Ctrl+L: Add local variable</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Trigger and dialog</td>
+        <td>Ctrl+L on an identifier in a routine body opens the Add local variable dialog. Name is prefilled. Type name defaults to <code>Integer</code>. Requires removing the Lazarus Find Next Ctrl+L alternate (user setting).</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Insertion</td>
+        <td>Routine with a var section: new declaration is the first line under <code>var</code>, indented two spaces. Routine without one: <code>var</code> is created above <code>begin</code>. Nested routine: declaration goes to the enclosing routine's own var section. Outer body below nested routines works.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Duplicate and invalid names</td>
+        <td>Duplicate name: "Variable already exists" confirmation (OK inserts the redeclaration). Invalid name (e.g. <code>123myVar</code>): confirmation before inserting.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Type name list</td>
+        <td>Primitive types, unit-level types and current-routine local types. Filters as you type (case-insensitive). Inline <code>type T = ...</code> suggests <code>T</code>. Class members do not appear.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>History list and Edit...</td>
+        <td>Separate History combo, up to 30 entries, most recent first. Selecting an entry fills Type name. OK saves the chosen type. Cancel does not. <code>Edit...</code> opens the history file in the Lazarus editor.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>5. Tree and view</h2>
+  <table>
+    <thead><tr><th>Feature</th><th>Behaviour</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Default view</td>
+        <td>Source order opens by default. The category toggle is still available.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Refresh after Delete and Paste</td>
+        <td>The tree refreshes automatically after Delete and Paste, even when the tree has focus.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+      <tr>
+        <td>Class in the Implementation section</td>
+        <td>Delete works for classes declared after <code>implementation</code>.</td>
+        <td class="ok">Verified in IDE</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>6. Unimplemented features</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th>Status</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Variables, constants and non-class types: copy and paste into <code>interface</code></td>
+        <td class="status-not">Not implemented</td>
+        <td>Next in the todo list</td>
+      </tr>
+      <tr>
+        <td>Enums and other non-class types (<code>//MMWIN:TYPESCOPY</code>)</td>
+        <td class="status-not">Not implemented</td>
+        <td>After variables and constants</td>
+      </tr>
+      <tr>
+        <td>Delete Recovery (JSON log in <code>.wkdeleted/</code>)</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement</td>
+      </tr>
+      <tr>
+        <td>Delete Recovery viewer and restore</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement</td>
+      </tr>
+      <tr>
+        <td>Ctrl+L Type name list: primitive types, unit types, history</td>
+        <td class="status-done">Done</td>
+        <td>Verified in the IDE</td>
+      </tr>
+      <tr>
+        <td>Ctrl+L nested routine var section (<code>Fill</code>)</td>
+        <td class="status-done">Done</td>
+        <td>Verified in the IDE</td>
+      </tr>
+      <tr>
+        <td>Expanded branches restored after Delete and Paste</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement; manual Refresh keeps them</td>
+      </tr>
+      <tr>
+        <td>Duplicate routine paste renames (<code>_1</code>, <code>_2</code>) instead of skipping</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement</td>
+      </tr>
+      <tr>
+        <td>Blank-line spacing after each paste</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement</td>
+      </tr>
+      <tr>
+        <td>Warn-first scan for undeclared identifiers in a pasted body</td>
+        <td class="status-not">Not implemented</td>
+        <td>Enhancement</td>
+      </tr>
+      <tr>
+        <td>Substring match in <code>FindClassDeclRange</code> (copy path): <code>THuman</code> could match <code>XTHuman</code></td>
+        <td class="status-not">Not implemented</td>
+        <td>Fix pending; Delete already uses the whole-name match</td>
+      </tr>
+      <tr>
+        <td>Routine-into-class paste, check (e): Ctrl+Z after paste</td>
+        <td class="status-verify">Not verified</td>
+        <td>Checks (a) to (d) passed</td>
+      </tr>
+      <tr>
+        <td>Remove unused local variables in <code>WKAddLocalVariableExecute</code></td>
+        <td class="status-not">Not implemented</td>
+        <td>Build notes only</td>
+      </tr>
+      <tr>
+        <td>Optional push of <code>mmx-explorer-m1</code> and <code>mmx-explorer-m2</code></td>
+        <td class="status-na">Not needed</td>
+        <td>Branches are merged; m1 and m2 deletion is in progress</td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>
